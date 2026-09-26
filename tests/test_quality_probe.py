@@ -85,6 +85,18 @@ def test_parse_sse_quality_detects_thinking():
     assert "TCP" in parsed["preview"]
 
 
+def test_parse_sse_quality_ignores_billing_only_reasoning():
+    parsed = parse_sse_quality(
+        sse(
+            {"choices": [{"delta": {"content": "QUALITY_OK"}}]},
+            {"usage": {"completion_tokens": 53, "reasoning_tokens": 1303}},
+        )
+    )
+    assert parsed["has_thinking"] is False
+    assert parsed["usage_reason"] == 1303
+    assert parsed["preview"].startswith("QUALITY_OK")
+
+
 def test_probe_account_healthy_and_risk(monkeypatch_clock=None):
     times = iter([0.0, 0.2, 2.2, 2.2, 2.2])
 
@@ -322,6 +334,7 @@ if __name__ == "__main__":
     test_classify_sample_thinking_and_tps()
     test_classify_failure_kind_account_vs_transport()
     test_parse_sse_quality_detects_thinking()
+    test_parse_sse_quality_ignores_billing_only_reasoning()
     test_probe_account_healthy_and_risk()
     test_probe_account_early_stops_after_thinking()
     test_stamp_quality_on_record_writes_meta_not_token()

@@ -6,8 +6,9 @@ CPA (or Grok2API) account to generate a short streamed reply through a configure
 residential (家宽) proxy, stopping soon after thinking appears, then classifies:
 
   - risk     : HTTP 401/403 / permission-denied (account cannot chat)
-  - hard     : streamed a reply but no thinking (降智)
-  - healthy  : thinking present
+  - hard     : streamed a reply but no thinking text (降智)
+  - healthy  : thinking/reasoning delta text present
+    Billed usage.reasoning_tokens alone does not count as thinking.
   - error    : transport / proxy / parse failure
 """
 
@@ -180,8 +181,8 @@ def parse_sse_quality(lines) -> dict:
                 usage_reason,
                 _int_field(usage, "reasoning_tokens", "reasoningTokens"),
             )
-            if usage_reason > 0:
-                has_thinking = True
+            # Billed reasoning_tokens alone is the 降智 pattern: usage is charged
+            # but no thinking/reasoning text is streamed.
         choices = chunk.get("choices") or []
         if not isinstance(choices, list):
             choices = []
