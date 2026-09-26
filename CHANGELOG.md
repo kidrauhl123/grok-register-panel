@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Import VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks (and Base64 subscriptions). Camoufox still uses HTTP; `sing-box` is started locally.
+- Optional chenyme grok2api remote import: `grok2api_auto_add_remote` plus admin credentials push Grok Web SSO to the reverse proxy.
+
 ### Changed
 
-- 降智测试只按有没有 thinking 判定：有 thinking 为正常，没有为降智。不再用 Token/s / `burst` / `soft` 分档。
+- 降智测试只按有没有 thinking **文本**判定：有 thinking 为正常，没有为降智。账单里的 `reasoning_tokens` 单独出现不算思考。
+- `quality_probe_on_register` 默认打开。
 
 ## 0.5.0 - 2026-09-06
 

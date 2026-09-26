@@ -27,6 +27,8 @@ tests=(
   tests/test_monitor_http.py
   tests/test_proxy_store.py
   tests/test_proxy_worker_integration.py
+  tests/test_advanced_proxy.py
+  tests/test_proxy_protocols.py
   tests/test_email_provider_store.py
   tests/test_inbucket.py
   tests/test_outlook_rt.py
@@ -58,6 +60,11 @@ done
   run_until_100.py \
   sso_to_auth_json.py \
   quality_probe.py \
+  advanced_proxy.py \
+  grok2api_remote.py \
+  proxy_protocols.py \
+  proxy_protocol_runtime.py \
+  proxy_bridge.py \
   scripts/check_bfs.py \
   scripts/check_sso_state.py \
   scripts/check_quality.py \

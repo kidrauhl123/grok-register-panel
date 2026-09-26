@@ -34,6 +34,7 @@ LOCK_PATH = STATE_PATH.with_suffix(STATE_PATH.suffix + ".lock")
 LEGACY_PATH = Path(os.environ.get("PROXY_POOL_LEGACY_FILE", str(ROOT / "proxies.txt")))
 
 ALLOWED_SCHEMES = {"http", "https", "socks5", "socks5h"}
+ADVANCED_SCHEMES = {"vless", "vmess", "trojan", "hysteria2", "hy2", "tuic", "ss"}
 ALLOWED_STATUSES = {"unknown", "healthy", "unhealthy", "cooldown"}
 MAX_IMPORT_ITEMS = 500
 MAX_TEST_ITEMS = 200
@@ -258,6 +259,18 @@ def normalize_proxy(value: object) -> str:
         raise ProxyValidationError("代理地址为空")
     if any(char.isspace() for char in raw):
         raise ProxyValidationError("代理地址不能包含空白字符")
+
+    scheme_hint = raw.split("://", 1)[0].lower() if "://" in raw else ""
+    if scheme_hint in ADVANCED_SCHEMES:
+        try:
+            from advanced_proxy import normalize_any_proxy
+            from proxy_protocols import ProxyProtocolError
+        except Exception as exc:
+            raise ProxyValidationError("无法加载高级代理解析器") from exc
+        try:
+            return normalize_any_proxy(raw)
+        except ProxyProtocolError as exc:
+            raise ProxyValidationError(str(exc) or "高级代理地址无效") from exc
 
     if "://" not in raw:
         parts = raw.split(":")
@@ -529,7 +542,14 @@ def _input_lines(values: object) -> list[str]:
 
 
 def import_proxies(values: object, *, source: str = "panel") -> dict:
-    lines = _input_lines(values)
+    if isinstance(values, str):
+        try:
+            from advanced_proxy import expand_import_text
+            lines = expand_import_text(values)
+        except Exception:
+            lines = _input_lines(values)
+    else:
+        lines = _input_lines(values)
     candidates = []
     errors = []
     seen = set()
@@ -785,9 +805,15 @@ def probe_proxy(url: object, timeout: float = DEFAULT_TEST_TIMEOUT) -> dict:
     timeout = max(2.0, min(float(timeout), 20.0))
     import requests
 
+    endpoint_url = normalized
+    release = None
+    scheme = normalized.split("://", 1)[0].lower() if "://" in normalized else "http"
+    if scheme in ADVANCED_SCHEMES:
+        from advanced_proxy import resolve_temporary
+        endpoint_url, release = resolve_temporary(normalized)
     session = requests.Session()
     session.trust_env = False
-    proxies = {"http": normalized, "https": normalized}
+    proxies = {"http": endpoint_url, "https": endpoint_url}
     endpoints = (
         "https://ipwho.is/",
         "https://ipinfo.io/json",
@@ -796,34 +822,41 @@ def probe_proxy(url: object, timeout: float = DEFAULT_TEST_TIMEOUT) -> dict:
     last_error = None
     result = None
     started = time.monotonic()
-    for endpoint in endpoints:
-        try:
-            response = session.get(
-                endpoint,
-                proxies=proxies,
-                timeout=(min(4.0, timeout), timeout),
-                headers={"Accept": "application/json", "User-Agent": "GrokRegister/1"},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if endpoint.startswith("https://ipwho.is") and payload.get("success") is False:
-                raise RuntimeError("探测服务拒绝了请求")
-            ip, asn, org = _parse_probe_payload(payload)
-            result = {
-                "ok": True,
-                "exit_ip": ip,
-                "asn": asn,
-                "asn_org": org,
-                "latency_ms": max(1, int((time.monotonic() - started) * 1000)),
-                "checked_at": _utc_now(),
-            }
-            break
-        except Exception as exc:
-            last_error = exc
-    if result is None:
-        raise RuntimeError(_probe_error_message(last_error))
-    probe_xai_signup(normalized, timeout=timeout)
-    return result
+    try:
+        for endpoint in endpoints:
+            try:
+                response = session.get(
+                    endpoint,
+                    proxies=proxies,
+                    timeout=(min(4.0, timeout), timeout),
+                    headers={"Accept": "application/json", "User-Agent": "GrokRegister/1"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if endpoint.startswith("https://ipwho.is") and payload.get("success") is False:
+                    raise RuntimeError("探测服务拒绝了请求")
+                ip, asn, org = _parse_probe_payload(payload)
+                result = {
+                    "ok": True,
+                    "exit_ip": ip,
+                    "asn": asn,
+                    "asn_org": org,
+                    "latency_ms": max(1, int((time.monotonic() - started) * 1000)),
+                    "checked_at": _utc_now(),
+                }
+                break
+            except Exception as exc:
+                last_error = exc
+        if result is None:
+            raise RuntimeError(_probe_error_message(last_error))
+        probe_xai_signup(endpoint_url, timeout=timeout)
+        return result
+    finally:
+        if release is not None:
+            try:
+                release()
+            except Exception:
+                pass
 
 
 def _apply_probe_result(proxy_id: str, result: dict) -> None:

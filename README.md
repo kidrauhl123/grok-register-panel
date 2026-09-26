@@ -4,6 +4,8 @@
 
 Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (MIT).
 
+kidrauhl123 fork of the upstream panel: Camoufox 批量注册 + Live 面板，并接上 VLESS/SS（sing-box）、chenyme grok2api 远端导入、按思考文本判定降智。
+
 批量注册 Grok 账号（Camoufox）+ Web 监控面板  
 任务编排 / 代理池 / 邮箱服务 / 账号补录 / BFS 检测 / **降智测试** / **Token 鉴权**
 
@@ -28,12 +30,12 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 | 多邮箱后端 | **推荐 Outlook RT 库存**；也支持 DuckMail、MailNest、Cloudflare Worker 邮、YYDS、CloudMail、MoeMail、Inbucket 自建。域名邮箱不作为主路径 |
 | 反检测浏览器 | [Camoufox](https://camoufox.com/)（Gecko 层指纹） |
 | 出口预检 | 启动前解析出口 IP / ASN，命中黑名单直接换口；**优先家宽** |
-| **降智测试** | `quality_probe_on_register` 打开后，入库才短测；有 thinking 记正常，缺 thinking 记降智，401/403 记风控。面板可复测存量号 |
+| **降智测试** | 默认入库短测；必须有思考文本才算正常。只扣 `reasoning_tokens`、没有 thinking delta 记为降智 |
 | **BFS 检测** | 解码 access_token / SSO JWT，检查是否含 `bfs` claim；注册后自动标记，面板可批量扫描 CPA |
 | SSO 对照扫描 | grok.com `botFlagSource` / `policy=deny` **已不可靠**，不再作为风控门禁；旧面板仅保留对照 |
 | 编排器 | 多轮 batch、风控满 N 暂停、ASN 自动扩黑；规则写入 JSON 状态，不修改源码 |
 | **Live 面板** | 启停、并发、再跑 N、黑名单、时段成功率、本批代理流量、账号补录、降智测试和 BFS 扫描；操作 API 需 `MONITOR_TOKEN` |
-| 外部代理池 | 面板单条/批量导入、去重、探活、启停、删除；记录出口 IP、ASN、延迟和冷却状态 |
+| 外部代理池 | HTTP/SOCKS 以及 VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks（本机 sing-box 转 HTTP）；支持 Base64 订阅粘贴 |
 | 邮箱域名池 | 自有域名/子域名导入、provider 绑定、连续拒绝阈值、自动拉黑、活跃数限制和手动重置 |
 | 失败恢复 | 待处理 SSO / accounts 文本补录 CPA，跳过已有账号，成功后自动出队 |
 | 安全静态缓存 | 面板任务默认复用 JS / CSS / 字体 / 图片等 GET 静态资源；不缓存文档、接口、WebSocket 或 Turnstile |
@@ -225,7 +227,7 @@ python webui/monitor.py
 3. 设模式 / workers / batch 数量 / 再跑 N / 风控满 N → **启动**
 4. 需要多出口时打开顶部 **代理池**，导入代理并等待检测完成
 5. 打开顶部 **邮箱服务**，优先选 **Outlook RT**，填写库存路径后保存并测试。不要把域名邮箱当主路径
-6. 需要入库时短测降智：打开 `quality_probe_on_register`。存量号用顶部 **降智测试** 批量复测
+6. 入库默认短测降智。存量号用顶部 **降智测试** 批量复测。推送到 xai.premsir.com 时填写 chenyme 远端地址和管理员账号。VLESS/SS 节点直接粘贴进代理池（需本机 `sing-box`）。
 
 ### 静态资源缓存与批次流量
 

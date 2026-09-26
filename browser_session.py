@@ -813,6 +813,13 @@ def create_browser_options(unique_profile=True) -> dict:
     proxies = _proxies()
     proxy = str(proxies.get("https") or proxies.get("http") or "").strip()
     if proxy:
+        try:
+            from advanced_proxy import bind_thread_proxy
+            proxy = bind_thread_proxy(proxy)
+        except Exception:
+            from advanced_proxy import unbind_thread_proxy
+            unbind_thread_proxy()
+            raise
         network_proxy = meter_proxy_url(proxy)
         opts["proxy"] = _build_camoufox_proxy(network_proxy)
         try:
@@ -999,6 +1006,11 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
 def stop_browser(force=False):
     if _debug() and not force:
         return
+    try:
+        from advanced_proxy import unbind_thread_proxy
+        unbind_thread_proxy()
+    except Exception:
+        pass
     current = active_browser()
     profile_dir = getattr(_tls, "profile_dir", None)
     set_browser_session(None, None)

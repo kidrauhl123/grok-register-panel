@@ -49,6 +49,11 @@ def test_normalize_proxy_formats_and_rejects_paths():
         pass
     else:
         raise AssertionError("proxy paths must be rejected")
+    vless = (
+        "vless://94c96fd8-b498-4a98-8b6e-4facdb63eb2e@proxy.example:2083"
+        "?security=tls&type=ws&path=%2F#n"
+    )
+    assert proxy_store.normalize_proxy(vless).startswith("vless://")
     assert proxy_store._probe_error_message(
         "ProxyError unable to connect to proxy http://user:secret@proxy.example:8080"
     ) == "无法连接代理"

@@ -228,8 +228,12 @@ DEFAULT_CONFIG = {
     "cpa_management_key": "",
     # Grok2API / ~/.grok 风格 auth 目录（默认项目根目录下 grok2api_auth/）
     "grok2api_auth_dir": "grok2api_auth",
-    # 写入 CPA / Grok2API 后立刻短测降智（短 prompt，见到 thinking 即停）
-    "quality_probe_on_register": False,
+    "grok2api_auto_add_remote": False,
+    "grok2api_remote_base": "",
+    "grok2api_remote_admin_username": "",
+    "grok2api_remote_admin_password": "",
+    # 写入 CPA / Grok2API 后立刻短测降智（必须有思考文本；仅扣 reasoning tokens 算降智）
+    "quality_probe_on_register": True,
     "mailnest_api_key": "",
     "mailnest_project_code": "x-ai001",
     # YYDS：留空自动选已验证域名；填写则固定该域名
@@ -1300,6 +1304,11 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
             _cpa_log("token 已换出但 CPA/Grok2API 均未写入成功")
             _append_sso_pending(email, sso, log_callback=log_callback)
             return False
+        try:
+            from grok2api_remote import maybe_import_web_sso
+            maybe_import_web_sso(sso, email=email, log=_cpa_log)
+        except Exception as remote_g2a:
+            _cpa_log("chenyme grok2api 导入失败: %s" % remote_g2a)
         # 成功写入后把 bfs 记入结果日志（ok 状态由上层注册成功路径再记一次时可能覆盖；此处补一条细节）
         if bfs_check and bfs_info.get("has_bfs"):
             try:
@@ -3205,6 +3214,18 @@ class GrokRegisterGUI:
         c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_management_key_var, width=28), 4, 3)
         c_label(5, 0, "Grok2API 目录:")
         c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_auth_dir_var, width=52), 5, 1, columnspan=3)
+        self.grok2api_auto_add_remote_var = tk.BooleanVar(value=bool(config.get("grok2api_auto_add_remote", False)))
+        self.grok2api_remote_base_var = tk.StringVar(value=str(config.get("grok2api_remote_base", "") or ""))
+        self.grok2api_remote_admin_username_var = tk.StringVar(value=str(config.get("grok2api_remote_admin_username", "") or ""))
+        self.grok2api_remote_admin_password_var = tk.StringVar(value=str(config.get("grok2api_remote_admin_password", "") or ""))
+        c_label(6, 0, "推送到 chenyme:")
+        c_field(tk_checkbutton(self.cpa_frame, text="导入 Grok Web SSO 到远端 grok2api", variable=self.grok2api_auto_add_remote_var), 6, 1, columnspan=3)
+        c_label(7, 0, "远端地址:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_base_var, width=34), 7, 1)
+        c_label(7, 2, "管理员:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_admin_username_var, width=14), 7, 3)
+        c_label(8, 0, "管理员密码:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_admin_password_var, width=28, show="*"), 8, 1)
 
         self.email_provider_var.trace_add("write", lambda *_: self._refresh_provider_fields())
         self.cpa_auto_add_var.trace_add("write", lambda *_: self._refresh_cpa_fields())
@@ -3404,6 +3425,10 @@ class GrokRegisterGUI:
             config["cpa_remote_url"] = self.cpa_remote_url_var.get().strip()
             config["cpa_management_key"] = self.cpa_management_key_var.get().strip()
             config["grok2api_auth_dir"] = self.grok2api_auth_dir_var.get().strip()
+            config["grok2api_auto_add_remote"] = bool(self.grok2api_auto_add_remote_var.get())
+            config["grok2api_remote_base"] = self.grok2api_remote_base_var.get().strip()
+            config["grok2api_remote_admin_username"] = self.grok2api_remote_admin_username_var.get().strip()
+            config["grok2api_remote_admin_password"] = self.grok2api_remote_admin_password_var.get()
         except Exception:
             pass
         self.log("[*] 开始连通性检查...")
@@ -3527,6 +3552,10 @@ class GrokRegisterGUI:
         config["cpa_remote_url"] = self.cpa_remote_url_var.get().strip()
         config["cpa_management_key"] = self.cpa_management_key_var.get().strip()
         config["grok2api_auth_dir"] = self.grok2api_auth_dir_var.get().strip()
+        config["grok2api_auto_add_remote"] = bool(self.grok2api_auto_add_remote_var.get())
+        config["grok2api_remote_base"] = self.grok2api_remote_base_var.get().strip()
+        config["grok2api_remote_admin_username"] = self.grok2api_remote_admin_username_var.get().strip()
+        config["grok2api_remote_admin_password"] = self.grok2api_remote_admin_password_var.get()
         raw_paths = [x.strip() for x in self.cloudflare_paths_var.get().split(",") if x.strip()]
         if len(raw_paths) >= 4:
             config["cloudflare_path_domains"] = raw_paths[0] if raw_paths[0].startswith("/") else ("/" + raw_paths[0])

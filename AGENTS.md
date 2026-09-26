@@ -32,9 +32,12 @@ bulk abuse.
   `log/sso_clean.txt`. Do not use this scan as a live risk gate.
 - `quality_probe.py` and `webui/quality_ops.py` own the 降智测试: short streamed
   chat replies over 家宽/proxy pool (early-stop after thinking). Registration
-  stamps `quality_*` onto CPA/Grok2API auth only when `quality_probe_on_register`
-  is on (default off). Panel exports must not include access tokens. Prefer home
+  stamps `quality_*` onto CPA/Grok2API auth when `quality_probe_on_register`
+  is on (default on). Thinking text is required; billed reasoning_tokens alone is 降智. Panel exports must not include access tokens. Prefer home
   proxies from `proxy_store.worker_proxy_details()`.
+- `advanced_proxy.py` plus `proxy_protocols.py` / `proxy_protocol_runtime.py`
+  turn VLESS/SS/Trojan/Hysteria2/TUIC into a local HTTP endpoint for Camoufox.
+- `grok2api_remote.py` owns chenyme grok2api admin SSO import.
 - `webui/proxy_store.py` owns proxy import, normalization, health, cooldown, and
   redacted API views. `webui/email_provider_store.py` owns provider config and
   secret-preserving updates. `webui/email_domain_store.py` owns domain rotation

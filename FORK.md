@@ -1,12 +1,11 @@
 # Fork notes
 
-This is a fork of [lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel) for kidrauhl123.
+This is a fork of [lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel) customized for kidrauhl123.
 
-Use this repo as the registration product (Camoufox, live panel, orchestrator, email backends).
+## What this fork adds
 
-Keep the older `JungAuto/grok/grok-register` tree only for pieces this fork still lacks:
+- **Advanced proxy nodes**: import `vless://` / `ss://` / VMess / Trojan / Hysteria2 / TUIC (and Base64 subscriptions). Camoufox still talks HTTP; `sing-box` is started locally when needed.
+- **chenyme grok2api push**: set `grok2api_auto_add_remote` plus `grok2api_remote_base` / admin user / password to import Grok Web SSO into `https://xai.premsir.com`.
+- **降智**: thinking **text** is required. Billed `reasoning_tokens` without a reasoning delta is `hard` / 降智. `quality_probe_on_register` defaults on.
 
-- VLESS / Shadowsocks / sing-box proxy pool (this fork takes a single HTTP/SOCKS URL)
-- Pushing SSO into the chenyme grok2api admin API at xai.premsir.com (this fork writes local `grok2api_auth/` JSON)
-
-Quality probe here treats **thinking text** as the signal. Billed `reasoning_tokens` without a thinking delta is 降智.
+Install `sing-box` on PATH (or set `proxy_singbox_path`) for VLESS/SS nodes.
