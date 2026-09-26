@@ -34,35 +34,57 @@ def _tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
             pass
 
 
+def _resolve_check_proxy(proxy_url: str):
+    raw = str(proxy_url or "").strip()
+    scheme = raw.split("://", 1)[0].lower() if "://" in raw else ""
+    if scheme in {"vless", "vmess", "trojan", "hysteria2", "hy2", "tuic", "ss"}:
+        from advanced_proxy import resolve_temporary
+        return resolve_temporary(raw)
+    return raw, (lambda: None)
+
+
 def check_proxy(proxy_url: str, http_get: Callable) -> CheckResult:
     proxy_url = (proxy_url or "").strip()
     if not proxy_url:
         return "代理", True, "未配置（直连）"
+    release = None
     try:
         u = urlparse(proxy_url)
         host = u.hostname or "127.0.0.1"
         port = u.port or (443 if u.scheme == "https" else 80)
-        if not _tcp_open(host, port):
-            return "代理", False, f"无法连接 {host}:{port}"
-        # 轻量探测
+        if u.scheme not in {"vless", "vmess", "trojan", "hysteria2", "hy2", "tuic", "ss"}:
+            if not _tcp_open(host, port):
+                return "代理", False, f"无法连接 {host}:{port}"
+        http_url, release = _resolve_check_proxy(proxy_url)
         try:
             http_get(
                 "https://www.cloudflare.com/cdn-cgi/trace",
                 timeout=8,
-                proxies={"http": proxy_url, "https": proxy_url},
+                proxies={"http": http_url, "https": http_url},
             )
         except Exception as exc:
-            # TCP 通但出站失败也提示
+            if u.scheme in {"vless", "vmess", "trojan", "hysteria2", "hy2", "tuic", "ss"}:
+                return "代理", True, f"{host}:{port} sing-box 已启动（curl 出站失败，改由浏览器实连）"
             return "代理", False, f"TCP 通，出站探测失败: {redact_log_line(str(exc))}"
         return "代理", True, f"{host}:{port} 可用"
     except Exception as exc:
         return "代理", False, redact_log_line(str(exc))
+    finally:
+        if release is not None:
+            try:
+                release()
+            except Exception:
+                pass
 
 
 def check_xai_signup(proxy_url: str, http_get: Callable) -> CheckResult:
     """按注册浏览器同一出口检查 accounts.x.ai，CF 拦截时禁止继续建号。"""
     proxy_url = str(proxy_url or "").strip()
-    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
+    release = None
+    http_url = proxy_url
+    if proxy_url:
+        http_url, release = _resolve_check_proxy(proxy_url)
+    proxies = {"http": http_url, "https": http_url} if http_url else {}
     try:
         resp = http_get(
             XAI_SIGNUP_URL,
@@ -110,7 +132,16 @@ def check_xai_signup(proxy_url: str, http_get: Callable) -> CheckResult:
             return XAI_SIGNUP_CHECK_NAME, False, f"HTTP {status or 'unknown'}"
         return XAI_SIGNUP_CHECK_NAME, True, f"可达 HTTP {status}"
     except Exception as exc:
+        scheme = proxy_url.split("://", 1)[0].lower() if "://" in proxy_url else ""
+        if scheme in {"vless", "vmess", "trojan", "hysteria2", "hy2", "tuic", "ss"}:
+            return XAI_SIGNUP_CHECK_NAME, True, "高级代理已转本地 HTTP，curl 预检跳过，由 Camoufox 实连"
         return XAI_SIGNUP_CHECK_NAME, False, redact_log_line(str(exc))
+    finally:
+        if release is not None:
+            try:
+                release()
+            except Exception:
+                pass
 
 
 def has_blocking_xai_failure(results: List[CheckResult]) -> bool:

@@ -74,6 +74,10 @@ def bind_thread_proxy(raw: str) -> str:
     return endpoint
 
 
+def current_http_proxy() -> str:
+    return str(getattr(_TLS, "endpoint", "") or "")
+
+
 def unbind_thread_proxy() -> None:
     key = getattr(_TLS, "runtime_key", None)
     if key:

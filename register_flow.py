@@ -253,10 +253,59 @@ def _native_fill_code(code: str) -> str:
         return "filled-aggregate"
     boxes = _native_input_candidates("code_box")
     if len(boxes) < len(code):
+        pw = _playwright_fill_otp(code)
+        if pw.startswith("filled"):
+            return pw
         return "not-ready"
     if all(_native_type_element(box, char, per_char=False) for box, char in zip(boxes, code)):
         return "filled-boxes"
+    pw = _playwright_fill_otp(code)
+    if pw.startswith("filled"):
+        return pw
     return "boxes-failed"
+
+
+def _playwright_fill_otp(code: str) -> str:
+    """Type the OTP with Playwright when Drission-style locators miss the boxes."""
+    raw = getattr(page, "raw_page", None) or getattr(page, "_page", None)
+    if raw is None:
+        return "not-ready"
+    digits = str(code or "").strip()
+    if not digits:
+        return "empty-code"
+    frames = []
+    try:
+        frames.extend(list(raw.frames or []))
+    except Exception:
+        frames = [raw]
+    if raw not in frames:
+        frames.insert(0, raw)
+    selectors = (
+        'input[data-input-otp]',
+        'input[autocomplete="one-time-code"]',
+        'input[inputmode="numeric"]',
+        'input[maxlength="1"]',
+        'input[type="tel"]',
+        'input[type="text"]',
+    )
+    for frame in frames:
+        for sel in selectors:
+            try:
+                loc = frame.locator(sel).first
+                loc.wait_for(state="attached", timeout=800)
+                loc.click(force=True, timeout=800)
+                try:
+                    loc.fill(digits)
+                except Exception:
+                    loc.press_sequentially(digits, delay=30)
+                return "filled-playwright"
+            except Exception:
+                continue
+    try:
+        raw.keyboard.type(digits, delay=40)
+        return "filled-keyboard"
+    except Exception:
+        return "not-ready"
 
 
 def _native_fill_profile(given_name: str, family_name: str, password: str) -> bool:
@@ -1396,8 +1445,12 @@ return 'not-ready';
             )
 
         if filled == "not-ready":
-            sleep_with_cancel(0.5, cancel_callback)
-            continue
+            pw = _playwright_fill_otp(clean_code)
+            if pw.startswith("filled"):
+                filled = pw
+            else:
+                sleep_with_cancel(0.5, cancel_callback)
+                continue
         if "failed" in str(filled):
             if log_callback:
                 log_callback(f"[Debug] 验证码填写失败: {filled}")
@@ -1471,6 +1524,13 @@ return 'clicked';
 
         sleep_with_cancel(0.5, cancel_callback)
 
+    try:
+        html = str(page.html or "")[:8000]
+        open("/tmp/otp-page.html", "w", encoding="utf-8").write(html)
+        if log_callback:
+            log_callback("[Debug] 已保存验证码页 HTML 到 /tmp/otp-page.html")
+    except Exception:
+        pass
     raise Exception("验证码已获取，但自动填写/提交失败")
 
 

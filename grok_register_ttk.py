@@ -773,7 +773,12 @@ def pick_proxy_for_worker(worker_id: int, rotate_idx: int = 0) -> str:
 
 
 def get_proxies():
-    proxy = get_thread_proxy() or str(config.get("proxy", "") or "").strip()
+    try:
+        from advanced_proxy import current_http_proxy
+        http_proxy = current_http_proxy()
+    except Exception:
+        http_proxy = ""
+    proxy = http_proxy or get_thread_proxy() or str(config.get("proxy", "") or "").strip()
     if proxy:
         return {"http": proxy, "https": proxy}
     return {}
@@ -979,7 +984,12 @@ def _normalize_sso_token(raw_token):
 
 def _resolve_cpa_proxy():
     """CPA 换 token 用的代理：优先线程绑定 / config.proxy，其次环境变量，否则直连。"""
-    proxy = get_thread_proxy() or str(config.get("proxy", "") or "").strip()
+    try:
+        from advanced_proxy import current_http_proxy
+        http_proxy = current_http_proxy()
+    except Exception:
+        http_proxy = ""
+    proxy = http_proxy or get_thread_proxy() or str(config.get("proxy", "") or "").strip()
     if proxy:
         return proxy
     for key in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"):
