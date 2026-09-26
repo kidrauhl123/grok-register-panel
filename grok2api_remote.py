@@ -20,9 +20,18 @@ class Grok2APIRemoteError(RuntimeError):
 def _config():
     try:
         from grok_register_ttk import config
-        return dict(config or {})
+        if config:
+            return dict(config)
     except Exception:
-        return {}
+        pass
+    try:
+        from pathlib import Path
+        cfg_path = Path(__file__).resolve().parent / "config.json"
+        if cfg_path.exists():
+            return json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
 
 
 def _api_base(base: str) -> str:
