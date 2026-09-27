@@ -305,6 +305,8 @@ def _playwright_fill_otp(code: str) -> str:
         frames.insert(0, raw)
     selectors = (
         'input[data-input-otp]',
+        'input[name="code"]',
+        'input[name*="code" i]',
         'input[autocomplete="one-time-code"]',
         'input[inputmode="numeric"]',
         'input[maxlength="1"]',
@@ -936,7 +938,7 @@ def _email_page_advanced_once(email):
     try:
         return bool(
             page.run_js(
-                """
+                r"""
 function isVisible(node) {
     if (!node) return false;
     const style = window.getComputedStyle(node);
@@ -952,26 +954,41 @@ function textOf(node) {
         node.getAttribute('id'),
         node.getAttribute('autocomplete'),
         node.getAttribute('data-testid'),
-    ].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+    ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 // 1. 出现验证码输入框 => 已前进
 const codeInput = Array.from(document.querySelectorAll('input')).find((node) => {
-    if (!isVisible(node)) return false;
-    const type = (node.getAttribute('type') || '').toLowerCase();
-    if (['hidden', 'submit', 'button', 'checkbox', 'radio', 'file'].includes(type)) return false;
     const meta = textOf(node);
     const inMode = (node.getAttribute('inputmode') || '').toLowerCase();
-    return (
-        meta.includes('code') || meta.includes('otp') || meta.includes('verif') ||
+    const isCode = meta.includes('code') || meta.includes('otp') || meta.includes('verif') ||
         meta.includes('验证') || meta.includes('one-time') || inMode === 'numeric' ||
-        node.getAttribute('autocomplete') === 'one-time-code'
-    );
+        node.getAttribute('autocomplete') === 'one-time-code' || node.getAttribute('name') === 'code';
+    if (!isCode) return false;
+    return node.getAttribute('type') !== 'hidden';
 });
 if (codeInput) return true;
-// 2. 邮箱输入框已消失/不可用 => 已前进
+
+// 检查页面文本/按钮是否是验证码阶段
+const bodyText = (document.body && (document.body.innerText || document.body.textContent) || '').toLowerCase();
+if (
+    bodyText.includes('confirm email') ||
+    bodyText.includes('verification code') ||
+    bodyText.includes('enter code') ||
+    bodyText.includes('确认邮箱') ||
+    bodyText.includes('输入验证码') ||
+    bodyText.includes('check your email')
+) {
+    return true;
+}
+
+// 2. 邮箱输入框已消失/不可用 => 已前进（但前提是页面有内容，非纯白屏）
 const emailInput = Array.from(document.querySelectorAll('input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"], input[placeholder*="mail" i], input[aria-label*="mail" i]'))
     .find((node) => isVisible(node) && !node.disabled && !node.readOnly);
-if (!emailInput) return true;
+if (!emailInput) {
+    const anyInput = document.querySelector('input');
+    const anyBtn = document.querySelector('button');
+    if (anyInput || anyBtn) return true;
+}
 return false;
                 """
             )
@@ -982,10 +999,10 @@ return false;
         return False
 
 
-def _wait_email_page_advanced(email, wait=9.0, cancel_callback=None):
+def _wait_email_page_advanced(email, wait=25.0, cancel_callback=None):
     """点击提交后，在有限窗口内轮询确认页面确实前进。
 
-    给页面/网络留足反应时间（9s）：若窗口内检测到已前进则返回 True，
+    给慢速家宽代理留足反应时间（25s）：若窗口内检测到已前进则返回 True，
     否则返回 False，由调用方继续重试点击或最终超时换邮箱。
     """
     deadline = time.time() + wait
@@ -1013,13 +1030,19 @@ def fill_email_and_submit(timeout=60, log_callback=None, cancel_callback=None):
     deadline = time.time() + timeout
     last_diag_time = 0
     last_reclick_time = 0
-    # 从进入填邮箱起算：空白满 5s 再 reload，避免一上来狂刷
+    # 从进入填邮箱起算：空白满 15s 再 reload，避免一上来狂刷
     last_reload_time = time.time()
     blank_since = time.time()
     blank_reloads = 0
     last_snapshot = None
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        # 优先检测：若页面已前进到验证码页，直接返回成功！
+        if _email_page_advanced_once(email):
+            if log_callback:
+                log_callback(f"[*] 页面已前进至验证码阶段: {email}")
+            _notify_email_accepted(email)
+            return email, dev_token
         native_filled = _native_fill_email(email)
         if native_filled:
             filled = {"state": "filled", "source": "native", "url": page.url if page else ""}
@@ -1127,6 +1150,12 @@ return {
         if state != "not-ready":
             blank_since = time.time()  # 有进展则重置空白计时
         if state == "not-ready":
+            # 若页面已前进到验证码页，绝不能误当作空白页 reload！
+            if _email_page_advanced_once(email):
+                if log_callback:
+                    log_callback(f"[*] 页面已前进至验证码阶段: {email}")
+                _notify_email_accepted(email)
+                return email, dev_token
             now = time.time()
             # 无邮箱框：连续 5s 即 reload（不必等满总超时）
             inputs_empty = not (isinstance(filled, dict) and filled.get("inputs"))
