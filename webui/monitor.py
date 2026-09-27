@@ -2293,22 +2293,20 @@ HTML = r"""<!DOCTYPE html>
       </div>
       <div class="field field-mode">
         <label for="mode">运行模式</label>
-        <select id="mode">
+        <select id="mode" onchange="markControlModified()">
           <option value="orch">持续编排</option>
           <option value="batch">单批运行</option>
         </select>
       </div>
       <div class="field"><label for="workers-input">并发数</label>
-        <input type="number" id="workers-input" min="1" max="24" value="3"/>
+        <input type="number" id="workers-input" min="1" max="24" value="1" oninput="markControlModified()"/>
       </div>
-      <div class="field"><label for="batch_count">单批数量</label>
-        <input type="number" id="batch_count" min="1" max="200" value="40"/>
+      <div class="field"><label for="batch_count">目标数量</label>
+        <input type="number" id="batch_count" min="1" max="500" value="40" title="单批运行的目标个数，或持续编排模式下追加的账号总数" oninput="markControlModified()"/>
       </div>
-      <div class="field"><label for="add_count">追加目标</label>
-        <input type="number" id="add_count" min="1" max="2000" value="40" title="每次启动从当前 CPA 再注册 N 个"/>
-      </div>
+      <input type="hidden" id="add_count" value="40"/>
       <div class="field"><label for="risk_pause">风控阈值</label>
-        <input type="number" id="risk_pause" min="1" max="50" value="10"/>
+        <input type="number" id="risk_pause" min="1" max="50" value="10" oninput="markControlModified()"/>
       </div>
       <div class="control-actions">
         <button class="primary" id="btn-start" onclick="doStart()">启动任务</button>
@@ -3543,29 +3541,62 @@ async function refresh() {
     if (message.includes("令牌")) setMsg("ctrl-msg", message, "err");
   }
 }
+let controlLoaded = false;
+let controlUserModified = false;
+
+function markControlModified() {
+  controlUserModified = true;
+}
+
 function fillControl(d) {
   const c = d.control || {};
+  if (controlLoaded && controlUserModified) return;
   if (document.activeElement && ["workers-input","batch_count","add_count","risk_pause","mode"].includes(document.activeElement.id)) return;
-  if (c.workers != null) document.getElementById("workers-input").value = c.workers;
-  if (c.batch_count != null) document.getElementById("batch_count").value = c.batch_count;
-  if (c.add_count != null && document.getElementById("add_count")) document.getElementById("add_count").value = c.add_count;
-  if (c.risk_pause != null) document.getElementById("risk_pause").value = c.risk_pause;
-  if (c.mode) document.getElementById("mode").value = c.mode;
+
+  if (c.workers != null) {
+    const el = document.getElementById("workers-input");
+    if (el) el.value = c.workers;
+  }
+  const countVal = c.batch_count || c.add_count || 40;
+  const bEl = document.getElementById("batch_count");
+  if (bEl) bEl.value = countVal;
+  const aEl = document.getElementById("add_count");
+  if (aEl) aEl.value = countVal;
+
+  if (c.risk_pause != null) {
+    const el = document.getElementById("risk_pause");
+    if (el) el.value = c.risk_pause;
+  }
+  if (c.mode) {
+    const el = document.getElementById("mode");
+    if (el) el.value = c.mode;
+  }
+  controlLoaded = true;
 }
+
 function controlBody() {
+  const countVal = Number(document.getElementById("batch_count") ? document.getElementById("batch_count").value : 40) || 40;
   return {
-    workers: Number(document.getElementById("workers-input").value || 3),
-    batch_count: Number(document.getElementById("batch_count").value || 40),
-    add_count: Number((document.getElementById("add_count") || {}).value || 40),
-    risk_pause: Number(document.getElementById("risk_pause").value || 10),
-    mode: document.getElementById("mode").value || "orch",
+    workers: Number(document.getElementById("workers-input") ? document.getElementById("workers-input").value : 1) || 1,
+    batch_count: countVal,
+    add_count: countVal,
+    risk_pause: Number(document.getElementById("risk_pause") ? document.getElementById("risk_pause").value : 10) || 10,
+    mode: document.getElementById("mode") ? document.getElementById("mode").value : "orch",
   };
 }
+
 async function saveCtrl() {
   try {
-    const j = await api("/api/control", { method: "POST", body: JSON.stringify(controlBody()) });
-    setMsg("ctrl-msg", "设置已保存，并发数 " + j.workers, "ok");
-  } catch (e) { setMsg("ctrl-msg", String(e.message || e), "err"); }
+    const body = controlBody();
+    const j = await api("/api/control", { method: "POST", body: JSON.stringify(body) });
+    controlUserModified = false;
+    if (last && last.control) {
+      Object.assign(last.control, j);
+    }
+    setMsg("ctrl-msg", "设置已保存：并发数 " + (j.workers || body.workers) + "，目标数量 " + (j.batch_count || body.batch_count), "ok");
+  } catch (e) {
+    setMsg("ctrl-msg", String(e.message || e), "err");
+  }
 }
 async function doStart() {
   document.getElementById("btn-start").disabled = true;
