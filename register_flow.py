@@ -169,16 +169,12 @@ def _native_click_action(keywords, deny_keywords=()) -> str:
 def _human_mouse_drift(count: int = 2) -> None:
     """模拟人类在页面停留、思考或阅读时手部的轻微鼠标移动。"""
     try:
+        from human_motion import human_mouse_drift
         raw = getattr(page, "raw_page", None)
         if raw is None:
-            return
-        viewport = getattr(raw, "viewport_size", None) or {"width": 1280, "height": 800}
-        w, h = viewport.get("width", 1280), viewport.get("height", 800)
-        for _ in range(count):
-            target_x = random.randint(int(w * 0.25), int(w * 0.75))
-            target_y = random.randint(int(h * 0.25), int(h * 0.75))
-            raw.mouse.move(target_x, target_y, steps=random.randint(10, 22))
-            time.sleep(random.uniform(0.12, 0.32))
+            raw = getattr(page, "_page", None)
+        if raw is not None:
+            human_mouse_drift(raw, count=count)
     except Exception:
         pass
 
@@ -782,6 +778,7 @@ def open_signup_page(log_callback=None, cancel_callback=None):
 
     # 等 SPA/CF 把壳渲染出来，再点邮箱注册
     sleep_with_cancel(1.0, cancel_callback)
+    _human_mouse_drift(1)
     if not _wait_signup_shell(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback):
         if log_callback:
             log_callback("[!] 注册页壳为空，尝试 reload 恢复")
@@ -977,19 +974,23 @@ return false;
         return False
 
 
-def _wait_email_page_advanced(email, wait=4.0, cancel_callback=None):
+def _wait_email_page_advanced(email, wait=9.0, cancel_callback=None):
     """点击提交后，在有限窗口内轮询确认页面确实前进。
 
-    给页面/网络一点反应时间：若窗口内检测到已前进则返回 True，
+    给页面/网络留足反应时间（9s）：若窗口内检测到已前进则返回 True，
     否则返回 False，由调用方继续重试点击或最终超时换邮箱。
     """
     deadline = time.time() + wait
+    poll_count = 0
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
         raise_if_email_domain_rejected(email)
         if _email_page_advanced_once(email):
             return True
-        sleep_with_cancel(0.4, cancel_callback)
+        poll_count += 1
+        if poll_count % 3 == 0:
+            _human_mouse_drift(1)
+        sleep_with_cancel(0.5, cancel_callback)
     raise_if_email_domain_rejected(email)
     return False
 
@@ -1123,11 +1124,11 @@ return {
             inputs_empty = not (isinstance(filled, dict) and filled.get("inputs"))
             buttons_empty = not (isinstance(filled, dict) and filled.get("buttons"))
             fully_blank = inputs_empty and buttons_empty
-            # not-ready = 无可用邮箱框；连续 5s 即 reload（含半载只有按钮的情况）
+            # not-ready = 无可用邮箱框；连续 15s 即 reload（给慢速代理留足渲染时间，避免频繁中断）
             if (
-                (now - blank_since) >= 5
-                and (now - last_reload_time) >= 5
-                and blank_reloads < 4
+                (now - blank_since) >= 15
+                and (now - last_reload_time) >= 15
+                and blank_reloads < 3
             ):
                 last_reload_time = now
                 blank_since = now
@@ -1135,7 +1136,7 @@ return {
                 kind = "全空白" if fully_blank else "无邮箱框"
                 if log_callback:
                     log_callback(
-                        f"[!] 邮箱页{kind}已满5s，reload 恢复 #{blank_reloads}"
+                        f"[!] 邮箱页{kind}已满15s，reload 恢复 #{blank_reloads}"
                     )
                 _reload_signup_and_open_email(
                     log_callback=log_callback, cancel_callback=cancel_callback
@@ -1401,9 +1402,10 @@ return false;
         raise Exception("获取验证码失败")
     clean_code = str(code).replace("-", "").strip()
     # 模拟真实人类查收验证码、阅读并切回窗口的自然延迟
-    code_read_pause = random.uniform(1.5, 2.8)
+    code_read_pause = random.uniform(1.6, 2.8)
     if log_callback:
         log_callback(f"[*] 已收到验证码，模拟查收并切换窗口停留 {code_read_pause:.1f}s...")
+    _human_mouse_drift(1)
     sleep_with_cancel(code_read_pause, cancel_callback)
     deadline = time.time() + timeout
 
@@ -1710,6 +1712,8 @@ try {
                 continue
         except Exception:
             pass
+        if _ % 2 == 1:
+            _human_mouse_drift(1)
         sleep_with_cancel(POLL_INTERVAL, cancel_callback)
 
     raise Exception("Turnstile 获取 token 失败")
@@ -1753,10 +1757,36 @@ def _try_click_turnstile_frame(log_callback=None):
     if log_callback:
         log_callback(f"[Debug] Turnstile frame 已定位: {frame_url[:100]}")
 
-    # ---- 策略 1：frame body 坐标点击（Turnstile 实际交互方式）----
-    # Turnstile iframe 内没有 checkbox DOM 元素（inputs=[]），
-    # 交互区域是 canvas/overlay，只能通过坐标点击。
-    # checkbox 标准位置在 iframe 左侧 24px 处。
+    # ---- 策略 1：page 级平滑贝塞尔滑动至 Turnstile 复选框并拟人点击（优先）----
+    try:
+        iframe_el = raw_page.query_selector(
+            'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'
+        )
+        if iframe_el:
+            box = iframe_el.bounding_box()
+            if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
+                from human_motion import human_move
+                # 复选框位于 iframe 左侧 22~28px，垂直居中附近
+                px = box["x"] + random.uniform(22.0, 27.0)
+                py = box["y"] + (box["height"] / 2.0) + random.uniform(-2.5, 2.5)
+                # 拟人贝塞尔轨迹平滑滑动至复选框
+                human_move(raw_page, px, py, speed=random.uniform(0.9, 1.25))
+                time.sleep(random.uniform(0.12, 0.25))
+                # 真实人类物理按压
+                raw_page.mouse.down(button="left")
+                time.sleep(random.uniform(0.06, 0.12))
+                raw_page.mouse.up(button="left")
+                if log_callback:
+                    log_callback(f"[*] 拟人化点击 Turnstile 复选框 ({px:.0f}, {py:.0f})")
+                # 点击后鼠标自然微移开（模拟人类等待校验结果）
+                time.sleep(random.uniform(0.12, 0.25))
+                human_move(raw_page, px + random.randint(40, 80), py + random.randint(-25, 25), speed=1.2)
+                return
+    except Exception as page_click_exc:
+        if log_callback:
+            log_callback(f"[Debug] Turnstile 拟人化坐标点击异常: {page_click_exc}")
+
+    # ---- 策略 2：frame 内部直接点击 body 坐标（兜底）----
     try:
         body_info = turnstile_frame.evaluate(
             """
@@ -1768,44 +1798,16 @@ def _try_click_turnstile_frame(log_callback=None):
 }
             """
         )
-        if log_callback:
-            bi = body_info or {}
-            log_callback(
-                f"[Debug] Turnstile frame body: w={bi.get('w', 0):.0f} h={bi.get('h', 0):.0f}"
-            )
-
-        if not body_info or body_info.get("w", 0) <= 0:
+        if body_info and body_info.get("h", 0) > 0:
+            click_x = 24
+            click_y = round(body_info["h"] / 2, 1)
+            turnstile_frame.click("body", position={"x": click_x, "y": click_y}, delay=random.randint(55, 110), timeout=3000)
             if log_callback:
-                log_callback("[Debug] Turnstile frame body 未渲染好，跳过")
+                log_callback(f"[*] 已通过 frame 点击 Turnstile body ({click_x}, {click_y:.0f})")
             return
-
-        click_x = 24
-        click_y = round(body_info["h"] / 2, 1)
-        turnstile_frame.click("body", position={"x": click_x, "y": click_y}, delay=random.randint(45, 95), timeout=3000)
-        if log_callback:
-            log_callback(f"[*] 已点击 Turnstile frame body ({click_x}, {click_y:.0f})")
-        return
     except Exception as frame_click_exc:
         if log_callback:
             log_callback(f"[Debug] Turnstile frame body 点击失败: {frame_click_exc}")
-
-    # ---- 策略 2：page 级 iframe 元素坐标点击（frame 点击被 CSP 拦截时）----
-    try:
-        iframe_el = raw_page.query_selector(
-            'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'
-        )
-        if iframe_el:
-            box = iframe_el.bounding_box()
-            if box and box["width"] > 0:
-                px = box["x"] + 24
-                py = box["y"] + box["height"] / 2
-                raw_page.mouse.click(px, py, delay=random.randint(45, 95))
-                if log_callback:
-                    log_callback(f"[*] 已在 page 级点击 Turnstile iframe ({px:.0f}, {py:.0f})")
-                return
-    except Exception as page_click_exc:
-        if log_callback:
-            log_callback(f"[Debug] Turnstile page 级点击失败: {page_click_exc}")
 
 
 def build_profile():
@@ -1992,12 +1994,12 @@ const submitBtn = buttons.find((node) => {
 });
 
 const cfInput = document.querySelector('input[name="cf-turnstile-response"]');
-const cfPresent = !!cfInput
-  || !!document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
-if (cfPresent) {
-    const token = String((cfInput && cfInput.value) || '').trim();
-    const solvedByToken = token.length >= 80;
-    if (!solvedByToken) return 'wait-cloudflare:' + token.length;
+let token = String((cfInput && cfInput.value) || '').trim();
+if (!token && window.turnstile && typeof window.turnstile.getResponse === 'function') {
+    try { token = String(window.turnstile.getResponse() || '').trim(); } catch(e) {}
+}
+if (token.length < 80) {
+    return 'wait-cloudflare:' + token.length;
 }
 
 if (submitBtn) {
@@ -2113,12 +2115,13 @@ function isVisible(node) {
 }
 
 const cfInput = document.querySelector('input[name="cf-turnstile-response"]');
-const cfPresent = !!cfInput
-  || !!document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
-if (cfPresent) {
-    const token = String((cfInput && cfInput.value) || '').trim();
-    const solvedByToken = token.length >= 80;
-    if (!solvedByToken) return 'wait-cloudflare:' + token.length;
+let token = String((cfInput && cfInput.value) || '').trim();
+if (!token && window.turnstile && typeof window.turnstile.getResponse === 'function') {
+    try { token = String(window.turnstile.getResponse() || '').trim(); } catch(e) {}
+}
+// 资料页 Turnstile 严格门禁：未获得有效 token (>=80) 严禁进入就绪状态
+if (token.length < 80) {
+    return 'wait-cloudflare:' + token.length;
 }
 
 function buttonText(node) {
@@ -2158,6 +2161,8 @@ return 'ready-to-submit';
                 f"[*] 等待 Cloudflare 人机验证通过后再提交... 当前token长度={token_len}",
                 token_len,
             )
+            # 等待期间模拟轻微手部漫游
+            _human_mouse_drift(1)
             now = time.time()
             if wait_cf_since is None:
                 wait_cf_since = now
@@ -2179,9 +2184,25 @@ return 'ready-to-submit';
             continue
 
         if submit_state == "ready-to-submit":
+            # 严格双重保险：Python 层二次验证 Turnstile token
+            token_val = page.run_js(r"""
+try {
+  const el = document.querySelector('input[name="cf-turnstile-response"]');
+  if (el && el.value) return el.value.trim();
+  if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
+    return String(window.turnstile.getResponse() || '').trim();
+  }
+} catch(e) {}
+return '';
+            """)
+            token_val = str(token_val or "").strip()
+            if len(token_val) < 80:
+                submit_state = f"wait-cloudflare:{len(token_val)}"
+                continue
+
             last_state = "ready-to-submit"
             # 拟人化随机停留：模拟人类填写完姓名密码后核对表单
-            profile_pause = random.uniform(1.5, 2.5)
+            profile_pause = random.uniform(1.6, 2.8)
             if log_callback:
                 log_callback(f"[*] 表单资料已填写就绪，拟人化停留 {profile_pause:.1f}s 后提交...")
             sleep_with_cancel(profile_pause, cancel_callback)

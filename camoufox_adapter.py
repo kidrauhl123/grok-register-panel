@@ -172,40 +172,32 @@ class CamoufoxElement:
 
     # ── 方法 ──
     def click(self, by_js: bool = None, timeout: float = 30):
-        """点击元素。
-
-        by_js=False/None（默认）→ Playwright 真实点击（isTrusted=true）
-        by_js=True             → JS click（不触发真实鼠标事件）
-
-        人类化策略：
-        - 先悬停（hover），触发真实 mouseenter / mouseover / mousemove 事件
-        - 点击前 80-220ms 随机延迟（视线对齐反应时间）
-        - 真实鼠标物理下压停留时间（delay=50-130ms，避免 mousedown/mouseup 同一微秒）
-        """
+        """点击元素（真人化贝塞尔平滑移动 + 自然视线停留 + 物理按压）。"""
         import random
 
-        if not by_js:
-            try:
-                self._locator.hover(timeout=int(min(timeout, 3) * 1000))
-                time.sleep(random.uniform(0.08, 0.20))
-            except Exception:
-                pass
-            time.sleep(random.uniform(0.06, 0.16))
-            self._locator.click(timeout=int(timeout * 1000), delay=random.randint(50, 130))
-        else:
+        if by_js:
             self._locator.evaluate("el => el.click()")
+            return
+
+        try:
+            from human_motion import human_click_locator
+            raw_page = getattr(self._locator, "page", None)
+            if raw_page:
+                if human_click_locator(raw_page, self._locator, timeout=timeout):
+                    return
+        except Exception:
+            pass
+
+        # 兜底常规点击
+        try:
+            self._locator.hover(timeout=int(min(timeout, 3) * 1000))
+            time.sleep(random.uniform(0.08, 0.18))
+        except Exception:
+            pass
+        self._locator.click(timeout=int(timeout * 1000), delay=random.randint(55, 110))
 
     def input(self, text: str, clear: bool = True, by_js: bool = False, **kw):
-        """输入文本。
-
-        by_js=False（默认）→ Playwright 真实键盘事件（isTrusted=true）
-        by_js=True        → 用 evaluate 直接设值
-
-        人类化策略：
-        - 真实按键下压停留时间（delay=45-95ms，消除机械瞬间触发）
-        - 字符间延迟随机化（70-170ms），符合真实打字节奏
-        - 遇到 @、.、- 或每 5-7 个字符插入自然停顿（160-360ms）
-        """
+        """输入文本（真人打字节奏 + 符号减速 + 随机思考微停顿）。"""
         import random
 
         text = str(text or "")
@@ -220,13 +212,23 @@ class CamoufoxElement:
                 text,
             )
             return
+
+        try:
+            from human_motion import human_type_locator
+            raw_page = getattr(self._locator, "page", None)
+            if raw_page:
+                if human_type_locator(raw_page, self._locator, text, clear=clear):
+                    return
+        except Exception:
+            pass
+
+        # 兜底键盘输入
         if clear:
             try:
                 self._locator.fill("")
             except Exception:
                 pass
-            time.sleep(random.uniform(0.08, 0.18))
-        # 拟人化真实按键输入：直接使用 Playwright press_sequentially 顺序击键（isTrusted=true）
+            time.sleep(random.uniform(0.08, 0.16))
         self._locator.press_sequentially(text, delay=random.randint(45, 80))
 
     def attr(self, name: str) -> str:
@@ -481,6 +483,16 @@ class CamoufoxPage:
 
     def scroll(self, x: int = 0, y: int = 0):
         self._page.evaluate(f"window.scrollTo({x}, {y})")
+
+    def mouse_move(self, x: float, y: float, steps: int = None, speed: float = 1.0):
+        """贝塞尔平滑移动鼠标至目标坐标。"""
+        from human_motion import human_move
+        human_move(self._page, x, y, steps=steps, speed=speed)
+
+    def mouse_drift(self, count: int = 2):
+        """模拟人类在页面停留、阅读时的手部轻微漫游。"""
+        from human_motion import human_mouse_drift
+        human_mouse_drift(self._page, count=count)
 
     def run_js_on_document(self, script: str):
         """在 document 上下文执行 JS（Playwright add_init_script 的替代）。"""
