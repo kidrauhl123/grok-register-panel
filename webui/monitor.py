@@ -658,7 +658,26 @@ def parse_log(path, max_tail=400_000):
     }
 
 
-def cpa_count():
+def healthy_cpa_count() -> int:
+    try:
+        accs = get_all_local_accounts()
+        return sum(1 for a in accs if a.get("quality") == "healthy")
+    except Exception:
+        cnt = 0
+        if not CPA_DIR.is_dir():
+            return 0
+        for p in CPA_DIR.glob("xai-*.json"):
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                v = d.get("quality_verdict") or ("healthy" if d.get("access_token") else "")
+                if v == "healthy":
+                    cnt += 1
+            except Exception:
+                pass
+        return cnt
+
+
+def total_cpa_count() -> int:
     try:
         return sum(1 for p in CPA_DIR.iterdir() if p.is_file() and p.name.startswith("xai-"))
     except Exception:
@@ -666,6 +685,28 @@ def cpa_count():
             return sum(1 for _ in CPA_DIR.iterdir() if _.is_file())
         except Exception:
             return 0
+
+
+def degraded_cpa_count() -> int:
+    try:
+        accs = get_all_local_accounts()
+        return sum(1 for a in accs if a.get("quality") in ("hard", "burst", "degraded"))
+    except Exception:
+        cnt = 0
+        if not CPA_DIR.is_dir():
+            return 0
+        for p in CPA_DIR.glob("xai-*.json"):
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                if d.get("quality_verdict") in ("hard", "burst", "degraded"):
+                    cnt += 1
+            except Exception:
+                pass
+        return cnt
+
+
+def cpa_count() -> int:
+    return healthy_cpa_count()
 
 
 def read_blacklist():
@@ -1048,7 +1089,10 @@ def start_batch_only():
 def snapshot():
     log = discover_log()
     parsed = parse_log(log) if log else {"error": "no log"}
-    cpa = cpa_count()
+    local_accs = get_all_local_accounts()
+    cpa = healthy_cpa_count()
+    cpa_tot = total_cpa_count()
+    cpa_deg = degraded_cpa_count()
     configured_base = read_base()
     base_stale = configured_base < 0 or configured_base > cpa
     base = cpa if base_stale else configured_base
@@ -1065,16 +1109,31 @@ def snapshot():
     fail = parsed.get("fail") or 0
     done = ok + fail
     pct = round(100.0 * ok / target, 2) if target else 0
+
+    is_orch = control.get("mode", "orch") == "orch"
+    add_target = int(control.get("add_count") or control.get("batch_count") or 40)
+    goal_added = max(0, cpa - base) if is_orch else ok
+    goal_target = add_target
+    goal_pct = min(100.0, round(100.0 * goal_added / goal_target, 1)) if goal_target else 0
+
     eta = None
     rate_per_min = None
     etime = proc.get("etime") or proc.get("batch_etime") or ""
     secs = _parse_etime(etime)
-    if secs and ok > 0:
+    eff_ok = goal_added if is_orch else ok
+    if secs and eff_ok > 0:
+        rate_per_min = round(eff_ok / (secs / 60.0), 2)
+        remain = max(goal_target - eff_ok, 0)
+        if rate_per_min > 0:
+            eta_min = remain / rate_per_min
+            eta = f"{int(eta_min)}m" if eta_min < 120 else f"{eta_min/60:.1f}h"
+    elif secs and ok > 0:
         rate_per_min = round(ok / (secs / 60.0), 2)
         remain = max(target - ok, 0)
         if rate_per_min > 0:
             eta_min = remain / rate_per_min
             eta = f"{int(eta_min)}m" if eta_min < 120 else f"{eta_min/60:.1f}h"
+
     workers_show = parsed.get("workers") or control.get("workers")
     traffic = read_batch_traffic(BATCH_TRAFFIC)
     traffic_summary = read_batch_traffic_summary(BATCH_TRAFFIC_HISTORY, current=traffic)
@@ -1085,14 +1144,18 @@ def snapshot():
             int(traffic.get("successful_accounts") or 0),
             int(parsed.get("ok") or 0),
         )
-    local_accs = get_all_local_accounts()
     return {
         "ts": time.time(),
         "ts_human": beijing_strftime("%Y-%m-%d %H:%M:%S"),
         "base_cpa": base,
         "base_cpa_stale": base_stale,
         "cpa": cpa,
+        "cpa_total": cpa_tot,
+        "cpa_degraded": cpa_deg,
         "cpa_delta": cpa - base,
+        "goal_added": goal_added,
+        "goal_target": goal_target,
+        "goal_pct": goal_pct,
         "process": proc,
         "control": control,
         "target": target,
@@ -1460,7 +1523,7 @@ HTML = r"""<!DOCTYPE html>
   button.theme-option[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
   .metric-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1px;
     overflow: hidden;
     border: 1px solid var(--border);
@@ -2175,8 +2238,7 @@ HTML = r"""<!DOCTYPE html>
     #run-label { display: none; }
     .card { padding: 13px; }
     .control-actions { flex-wrap: wrap; }
-    .control-actions button { flex-basis: calc(50% - 4px); }
-    .control-actions button:last-child { flex-basis: 100%; }
+    .control-actions button { flex: 1 1 0; min-width: 90px; }
     .metric .sub { font-size: 11px; }
     .button-group { justify-content: flex-start; }
     #run-status { display: none; }
@@ -2311,8 +2373,7 @@ HTML = r"""<!DOCTYPE html>
         <input type="number" id="risk_pause" min="1" max="50" value="10" title="单批累计出现指定数量的降智或风控账号时自动暂停任务并冷却节点" oninput="markControlModified()"/>
       </div>
       <div class="control-actions">
-        <button class="primary" id="btn-start" onclick="doStart()">启动任务</button>
-        <button class="danger" id="btn-stop" onclick="doStop()">停止任务</button>
+        <button class="primary" id="btn-toggle-task" onclick="toggleTask()">启动任务</button>
         <button onclick="saveCtrl()">保存设置</button>
       </div>
     </div>
@@ -2758,7 +2819,7 @@ HTML = r"""<!DOCTYPE html>
 
   <section class="card panel">
     <div class="progress-head">
-      <h2>当前批次</h2>
+      <h2 id="prog-title">任务进度</h2>
       <div class="mono" id="prog-text">--</div>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar"></div></div>
@@ -3601,8 +3662,19 @@ async function saveCtrl() {
     setMsg("ctrl-msg", String(e.message || e), "err");
   }
 }
+let isTaskRunning = false;
+
+async function toggleTask() {
+  if (isTaskRunning) {
+    await doStop();
+  } else {
+    await doStart();
+  }
+}
+
 async function doStart() {
-  document.getElementById("btn-start").disabled = true;
+  const btn = document.getElementById("btn-toggle-task") || document.getElementById("btn-start");
+  if (btn) btn.disabled = true;
   setMsg("ctrl-msg", "正在启动…", "");
   try {
     await api("/api/control", { method: "POST", body: JSON.stringify(controlBody()) });
@@ -3613,16 +3685,18 @@ async function doStart() {
     setTimeout(refresh, 1000);
     setTimeout(refresh, 3000);
   } catch (e) { setMsg("ctrl-msg", String(e.message || e), "err"); }
-  document.getElementById("btn-start").disabled = false;
+  if (btn) btn.disabled = false;
 }
+
 async function doStop() {
-  document.getElementById("btn-stop").disabled = true;
+  const btn = document.getElementById("btn-toggle-task") || document.getElementById("btn-stop");
+  if (btn) btn.disabled = true;
   try {
     const j = await api("/api/stop", { method: "POST", body: "{}" });
     setMsg("ctrl-msg", "已停止 killed=" + JSON.stringify(j.killed || []), "ok");
     setTimeout(refresh, 800);
   } catch (e) { setMsg("ctrl-msg", String(e.message || e), "err"); }
-  document.getElementById("btn-stop").disabled = false;
+  if (btn) btn.disabled = false;
 }
 async function resetBlacklist(mode) {
   mode = mode || "baseline";
@@ -4131,6 +4205,10 @@ function render(d) {
   if (d.process && d.process.orch_running) runLabel = "编排运行 #" + d.process.orch_pid;
   else if (d.process && d.process.batch_running) runLabel = "单批运行 #" + d.process.batch_pid;
   else if (d.ended) runLabel = "已完成";
+  if (on && (d.workers || d.eta)) {
+    runLabel += " · 并发 " + (d.workers || "--");
+    if (d.eta) runLabel += " · 预计 " + d.eta;
+  }
   document.getElementById("run-label").textContent = runLabel;
   document.getElementById("run-status").setAttribute("aria-label", "任务状态：" + runLabel);
   const sync = document.getElementById("sync-label");
@@ -4138,9 +4216,24 @@ function render(d) {
     sync.textContent = "实时更新";
     sync.className = "badge";
   }
-  document.getElementById("ctrl-status").textContent = on ? "运行中" : "空闲";
-  document.getElementById("btn-start").disabled = on;
-  document.getElementById("btn-stop").disabled = !on;
+  isTaskRunning = on;
+  let ctrlStatusText = on ? "运行中" : "空闲";
+  if (on) {
+    if (d.workers) ctrlStatusText += " · 并发 " + d.workers;
+    if (d.eta) ctrlStatusText += " · 预计剩余 " + d.eta;
+  }
+  document.getElementById("ctrl-status").textContent = ctrlStatusText;
+
+  const btnToggle = document.getElementById("btn-toggle-task");
+  if (btnToggle) {
+    btnToggle.className = on ? "danger" : "primary";
+    btnToggle.textContent = on ? "停止任务" : "启动任务";
+    btnToggle.title = on ? "任务正在运行中，点击停止" : "点击启动注册任务";
+  }
+  const bStart = document.getElementById("btn-start");
+  if (bStart) bStart.disabled = on;
+  const bStop = document.getElementById("btn-stop");
+  if (bStop) bStop.disabled = !on;
   fillControl(d);
 
   const traffic = d.traffic || {};
@@ -4161,11 +4254,31 @@ function render(d) {
   const trafficSuccessSub = trafficSuccessCount
     ? "累计成功 " + trafficSuccessCount + " / 含失败流量"
     : "等待成功账号样本";
+
+  const isOrch = (d.control && d.control.mode) === "orch";
+  const goalAdded = d.goal_added != null ? d.goal_added : (isOrch ? (d.cpa_delta || 0) : (d.ok || 0));
+  const goalTarget = d.goal_target != null ? d.goal_target : (d.control && (d.control.add_count || d.control.batch_count) || d.target || 40);
+  const goalPct = goalTarget > 0 ? Math.min(100, Math.round((goalAdded / goalTarget) * 1000) / 10) : 0;
+
   const kpis = [
-    ["总有效账号 (CPA)", d.cpa ?? "--", "accent", "较基线 " + (d.cpa_delta != null ? ((Number(d.cpa_delta) >= 0 ? "+" : "") + d.cpa_delta) : "--")],
-    ["本批成功", d.ok ?? 0, "ok", "目标 " + (d.target ?? "--")],
-    ["本批失败", d.fail ?? 0, "fail", d.success_rate != null ? "成功率 " + d.success_rate + "%" : "暂无失败"],
-    ["任务状态", on ? "运行中" : "已停止", on ? "ok" : "", "并发 " + (d.workers ?? "--") + (d.eta ? " · 预计 " + d.eta : "")],
+    [
+      "有效账号 (Healthy)",
+      d.cpa ?? "--",
+      "accent",
+      "较启动基线 " + (d.cpa_delta != null ? ((Number(d.cpa_delta) >= 0 ? "+" : "") + d.cpa_delta) : "--") + " · grok2api 同步"
+    ],
+    [
+      "降智拦截 (Hard)",
+      d.cpa_degraded ?? 0,
+      (Number(d.cpa_degraded) > 0 ? "fail" : "ok"),
+      "已自动隔离 · 阻止推向远端"
+    ],
+    [
+      isOrch ? "本次追加目标" : "本批目标进度",
+      goalAdded + " / " + goalTarget,
+      "ok",
+      "Healthy 达标率 " + goalPct + "%" + (d.eta ? " · 预计 " + d.eta : "")
+    ],
   ];
   document.getElementById("kpis").innerHTML = kpis.map(([label, val, cls, sub]) =>
     `<div class="metric"><div class="label">${esc(label)}</div><div class="value ${cls}">${esc(val)}</div><div class="sub">${esc(sub)}</div></div>`
@@ -4175,11 +4288,31 @@ function render(d) {
   if (ru && d.ts_human) ru.textContent = "数据更新 " + d.ts_human;
 
   const pct = Math.min(100, Number(d.progress_pct) || 0);
-  document.getElementById("bar").style.width = pct + "%";
-  document.getElementById("prog-text").textContent = (d.ok ?? 0) + " / " + (d.target ?? 0) + " (" + pct + "%)";
-  document.getElementById("prog-sub").textContent =
-    "尝试 " + (d.done_attempts ?? 0) + " / " + (on ? "进程运行中" : "未运行")
-    + (d.ended ? " / 结束：成功 " + d.ended.success + "，失败 " + d.ended.fail : "");
+  const progPct = isOrch ? goalPct : pct;
+  document.getElementById("bar").style.width = progPct + "%";
+  const pTitle = document.getElementById("prog-title");
+  if (pTitle) {
+    pTitle.textContent = isOrch ? "本次追加目标进度 (Healthy)" : "当前批次进度";
+  }
+  document.getElementById("prog-text").textContent =
+    (isOrch ? (goalAdded + " / " + goalTarget) : ((d.ok ?? 0) + " / " + (d.target ?? 0))) + " (" + progPct + "%)";
+
+  const batchOk = d.ok ?? 0;
+  const batchFail = d.fail ?? 0;
+  const batchDone = d.done_attempts ?? (batchOk + batchFail);
+  const batchTarget = d.target ?? "--";
+  const batchRate = d.success_rate != null ? d.success_rate + "%" : "--";
+  
+  let subText = `本批状态: 成功 ${batchOk} (目标 ${batchTarget}) · 失败 ${batchFail} · 成功率 ${batchRate} · 尝试 ${batchDone}`;
+  if (on) {
+    subText += " · 进程运行中";
+  } else {
+    subText += " · 任务已停止";
+  }
+  if (d.ended) {
+    subText += ` · 上批结束: 成功 ${d.ended.success}，失败 ${d.ended.fail}`;
+  }
+  document.getElementById("prog-sub").textContent = subText;
 
   if (Array.isArray(d.accounts)) {
     allAccountsCache = d.accounts;

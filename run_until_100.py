@@ -62,12 +62,12 @@ def apply_control() -> None:
             RISK_PAUSE = max(1, int(c["risk_pause"]))
         except Exception:
             pass
-    # 再跑 N 个：以当前 CPA 为基线
+    # 再跑 N 个：以当前 Healthy CPA 为基线
     add_count = c.get("add_count")
     if add_count is not None and str(add_count).strip() != "":
         try:
             n = max(1, int(add_count))
-            now = len(list(AUTHS.glob("xai-*.json")))
+            now = healthy_cpa_count()
             BASE0 = now
             TARGET_CPA = now + n
             return
@@ -96,8 +96,27 @@ def log(msg: str) -> None:
     append_private_text(ORCH_LOG, line + "\n")
 
 
-def cpa_count() -> int:
+def healthy_cpa_count() -> int:
+    cnt = 0
+    if not AUTHS.is_dir():
+        return 0
+    for p in AUTHS.glob("xai-*.json"):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            v = d.get("quality_verdict") or ("healthy" if d.get("access_token") else "")
+            if v == "healthy":
+                cnt += 1
+        except Exception:
+            pass
+    return cnt
+
+
+def total_cpa_count() -> int:
     return len(list(AUTHS.glob("xai-*.json")))
+
+
+def cpa_count() -> int:
+    return healthy_cpa_count()
 
 
 def kill_batch() -> None:
@@ -293,15 +312,17 @@ def batch_alive(pid: int) -> bool:
 def main():
     apply_control()
     kill_batch()
-    log(f"ORCH fixed start cpa_now={cpa_count()} base0={BASE0} target={TARGET_CPA} need={TARGET_CPA - cpa_count()}")
-    need0 = TARGET_CPA - cpa_count()
+    healthy_now = cpa_count()
+    total_files = total_cpa_count()
+    need0 = TARGET_CPA - healthy_now
+    log(f"ORCH fixed start healthy_now={healthy_now} (total_files={total_files}) base0={BASE0} target={TARGET_CPA} need_healthy={need0}")
     if need0 <= 0:
         log(f"TARGET already met (need={need0}). Set monitor add_count / target_cpa then restart.")
-        log(f"ORCH DONE cpa={cpa_count()} delta={cpa_count() - BASE0} target={TARGET_CPA} rounds=0")
+        log(f"ORCH DONE healthy={healthy_now} delta={healthy_now - BASE0} target={TARGET_CPA} rounds=0")
         log(f"final blocklist={sorted(read_blocklist_asns())}")
         return
 
-    log(f"rules: workers={WORKERS} pause_on_risk_only={RISK_PAUSE} SSO ignored block={sorted(read_blocklist_asns())}")
+    log(f"rules: workers={WORKERS} pause_on_risk_only={RISK_PAUSE} target_mode=healthy_only block={sorted(read_blocklist_asns())}")
     
     round_i = 0
     consecutive_batch_failures = 0
@@ -310,7 +331,7 @@ def main():
         round_i += 1
         need = TARGET_CPA - cpa_count()
         batch_n = min(max(need + 8, 15), 40)
-        log(f"=== ROUND {round_i} need={need} batch_n={batch_n} cpa={cpa_count()} block={sorted(read_blocklist_asns())} ===")
+        log(f"=== ROUND {round_i} need_healthy={need} batch_n={batch_n} healthy_now={cpa_count()} total_files={total_cpa_count()} block={sorted(read_blocklist_asns())} ===")
         try:
             proc, logpath = start_batch(batch_n)
         except Exception as e:
@@ -334,7 +355,8 @@ def main():
             risks = count_risk(logpath)
             oks = count_ok(logpath)
             delta = cpa_count() - BASE0
-            log(f"  mon ok={oks} risk={risks} cpa_delta={delta}/100 alive={alive}")
+            target_need = TARGET_CPA - BASE0
+            log(f"  mon ok={oks} risk={risks} healthy_delta={delta}/{target_need} healthy_total={cpa_count()} alive={alive}")
             if cpa_count() >= TARGET_CPA:
                 log("TARGET reached")
                 kill_batch()
