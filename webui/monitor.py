@@ -139,7 +139,7 @@ FONT_ASSETS = {
     "/assets/geist-mono.woff2": ASSET_DIR / "geist-mono-latin-wght-normal.woff2",
 }
 MONITOR_TOKEN_ENV = "MONITOR_TOKEN"
-PANEL_INCLUDE_TAIL = os.environ.get("PANEL_INCLUDE_TAIL", "0").strip() in ("1", "true", "yes")
+PANEL_INCLUDE_TAIL = os.environ.get("PANEL_INCLUDE_TAIL", "1").strip() in ("1", "true", "yes")
 
 
 def _configured_process_roots(

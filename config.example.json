@@ -32,6 +32,8 @@
   "grok2api_remote_base": "",
   "grok2api_remote_admin_username": "",
   "grok2api_remote_admin_password": "",
+  "grok2api_remote_only_healthy": true,
+  "grok2api_remote_target": "build",
   "quality_probe_on_register": true,
   "bfs_check": true,
   "bfs_skip_cpa": false,

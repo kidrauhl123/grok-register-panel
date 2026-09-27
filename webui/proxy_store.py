@@ -46,11 +46,14 @@ RISK_COOLDOWN_SECONDS = max(
     60, int(os.environ.get("PROXY_RISK_COOLDOWN_SECONDS", "1800"))
 )
 # 家宽口：风控不冷却、不禁用；换口改走 40 分钟内没出现过的 IP
-HOME_PROXY_PORTS = set(
-    int(p)
-    for p in str(os.environ.get("PROXY_HOME_PORTS", "") or "").split(",")
-    if str(p).strip().isdigit()
-) or set(range(8001, 8012))
+HOME_PROXY_PORTS = (
+    set(
+        int(p)
+        for p in str(os.environ.get("PROXY_HOME_PORTS", "") or "").split(",")
+        if str(p).strip().isdigit()
+    )
+    or (set(range(8001, 8012)) | set(range(21001, 21060)))
+)
 IP_FRESH_SECONDS = max(
     60, int(os.environ.get("PROXY_IP_FRESH_SECONDS", str(40 * 60)))
 )

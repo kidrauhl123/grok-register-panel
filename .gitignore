@@ -23,4 +23,5 @@ stickies*.txt
 .next_action_id.cache
 *.bak*
 *.fixed-keep
+*.lock
 .DS_Store

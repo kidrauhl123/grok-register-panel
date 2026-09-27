@@ -112,8 +112,15 @@ def _run_child(count: int, workers: int) -> int:
     ):
         os.environ.pop(key, None)
 
-    import connectivity
-    import grok_register_ttk as app
+    # Auto-detect X11 DISPLAY and set headed mode on Linux
+    if os.name != "nt":
+        if not os.environ.get("DISPLAY"):
+            for _disp in (":1", ":14", ":10", ":2", ":0"):
+                if os.path.exists(f"/tmp/.X11-unix/X{_disp.lstrip(':')}"):
+                    os.environ["DISPLAY"] = _disp
+                    break
+        if "GROK_HEADLESS" not in os.environ:
+            os.environ.setdefault("GROK_HEADED", "1")
 
     config_path = ROOT / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -124,6 +131,9 @@ def _run_child(count: int, workers: int) -> int:
         f"[env] DISPLAY={os.environ.get('DISPLAY')!r} time={time.strftime('%F %T')}",
         flush=True,
     )
+    import connectivity
+    import grok_register_ttk as app
+
     app.load_config()
     app._wire_runtime_modules()
     print(
@@ -203,6 +213,10 @@ def main(argv: list[str] | None = None) -> int:
         BATCH_ID_ENV: batch_id,
         TRAFFIC_FILE_ENV: str(traffic_file),
     }
+    if os.environ.get("DISPLAY"):
+        child_env["DISPLAY"] = os.environ["DISPLAY"]
+    if os.environ.get("GROK_HEADED"):
+        child_env["GROK_HEADED"] = os.environ["GROK_HEADED"]
     result = 1
     try:
         result = run_supervisor(

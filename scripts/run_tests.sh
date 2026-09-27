@@ -28,6 +28,7 @@ tests=(
   tests/test_proxy_store.py
   tests/test_proxy_worker_integration.py
   tests/test_advanced_proxy.py
+  tests/test_grok2api_remote.py
   tests/test_proxy_protocols.py
   tests/test_email_provider_store.py
   tests/test_inbucket.py

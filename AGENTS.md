@@ -37,7 +37,7 @@ bulk abuse.
   proxies from `proxy_store.worker_proxy_details()`.
 - `advanced_proxy.py` plus `proxy_protocols.py` / `proxy_protocol_runtime.py`
   turn VLESS/SS/Trojan/Hysteria2/TUIC into a local HTTP endpoint for Camoufox.
-- `grok2api_remote.py` owns chenyme grok2api admin SSO import.
+- `grok2api_remote.py` owns chenyme grok2api admin remote import (Grok Build OAuth accounts and Web SSO).
 - `webui/proxy_store.py` owns proxy import, normalization, health, cooldown, and
   redacted API views. `webui/email_provider_store.py` owns provider config and
   secret-preserving updates. `webui/email_domain_store.py` owns domain rotation

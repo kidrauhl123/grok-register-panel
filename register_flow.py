@@ -1457,6 +1457,12 @@ return 'not-ready';
             sleep_with_cancel(0.5, cancel_callback)
             continue
 
+        import random
+        # 拟人化随机停留：模拟人类查看验证码后核对一两秒再点击确认
+        otp_pause = random.uniform(1.2, 2.4)
+        if log_callback:
+            log_callback(f"[*] 验证码已输入，拟人化停留 {otp_pause:.1f}s 后确认...")
+        sleep_with_cancel(otp_pause, cancel_callback)
         clicked = _native_click_action(("确认邮箱", "继续", "下一步", "confirm", "continue", "next", "confirmar", "confirmer", "bestätigen", "確認"))
         if not clicked:
             clicked = page.run_js(
@@ -2142,6 +2148,12 @@ return 'ready-to-submit';
 
         if submit_state == "ready-to-submit":
             last_state = "ready-to-submit"
+            import random
+            # 拟人化随机停留：模拟人类填写完姓名密码后检查表单并移动鼠标
+            profile_pause = random.uniform(2.5, 4.2)
+            if log_callback:
+                log_callback(f"[*] 表单资料已填写就绪，拟人化停留 {profile_pause:.1f}s 后提交...")
+            sleep_with_cancel(profile_pause, cancel_callback)
             clicked_native = _native_click_action(
                 (
                     "完成注册", "创建账户", "signup", "create account", "continue", "next",

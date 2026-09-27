@@ -232,6 +232,8 @@ DEFAULT_CONFIG = {
     "grok2api_remote_base": "",
     "grok2api_remote_admin_username": "",
     "grok2api_remote_admin_password": "",
+    "grok2api_remote_only_healthy": True,
+    "grok2api_remote_target": "build",
     # 写入 CPA / Grok2API 后立刻短测降智（必须有思考文本；仅扣 reasoning tokens 算降智）
     "quality_probe_on_register": True,
     "mailnest_api_key": "",
@@ -1261,6 +1263,7 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
         if disable_bfs and record.get("bfs") is True:
             record["disabled"] = True
             _cpa_log("bfs 账号已标记 disabled=true")
+        verdict = ""
         quality_on = config.get("quality_probe_on_register", False)
         if isinstance(quality_on, str):
             quality_on = quality_on.strip().lower() not in ("0", "false", "no", "off")
@@ -1314,11 +1317,18 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
             _cpa_log("token 已换出但 CPA/Grok2API 均未写入成功")
             _append_sso_pending(email, sso, log_callback=log_callback)
             return False
-        try:
-            from grok2api_remote import maybe_import_web_sso
-            maybe_import_web_sso(sso, email=email, log=_cpa_log)
-        except Exception as remote_g2a:
-            _cpa_log("chenyme grok2api 导入失败: %s" % remote_g2a)
+
+        push_only_healthy = config.get("grok2api_remote_only_healthy", True)
+        if isinstance(push_only_healthy, str):
+            push_only_healthy = push_only_healthy.strip().lower() not in ("0", "false", "no", "off")
+        if quality_on and push_only_healthy and verdict != "healthy":
+            _cpa_log(f"⚠️ 账号降智检测结果为 {verdict or 'unknown'}（非 healthy），已拦截远程推送到 xai.premsir，仅保留本地")
+        else:
+            try:
+                from grok2api_remote import maybe_import_remote
+                maybe_import_remote(record=record, sso=sso, email=email, log=_cpa_log, verdict=verdict)
+            except Exception as remote_g2a:
+                _cpa_log("chenyme grok2api 导入失败: %s" % remote_g2a)
         # 成功写入后把 bfs 记入结果日志（ok 状态由上层注册成功路径再记一次时可能覆盖；此处补一条细节）
         if bfs_check and bfs_info.get("has_bfs"):
             try:
@@ -3228,14 +3238,17 @@ class GrokRegisterGUI:
         self.grok2api_remote_base_var = tk.StringVar(value=str(config.get("grok2api_remote_base", "") or ""))
         self.grok2api_remote_admin_username_var = tk.StringVar(value=str(config.get("grok2api_remote_admin_username", "") or ""))
         self.grok2api_remote_admin_password_var = tk.StringVar(value=str(config.get("grok2api_remote_admin_password", "") or ""))
+        self.grok2api_remote_target_var = tk.StringVar(value=str(config.get("grok2api_remote_target", "build") or "build"))
         c_label(6, 0, "推送到 chenyme:")
-        c_field(tk_checkbutton(self.cpa_frame, text="导入 Grok Web SSO 到远端 grok2api", variable=self.grok2api_auto_add_remote_var), 6, 1, columnspan=3)
+        c_field(tk_checkbutton(self.cpa_frame, text="导入账号到远端 grok2api", variable=self.grok2api_auto_add_remote_var), 6, 1, columnspan=3)
         c_label(7, 0, "远端地址:")
         c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_base_var, width=34), 7, 1)
         c_label(7, 2, "管理员:")
         c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_admin_username_var, width=14), 7, 3)
         c_label(8, 0, "管理员密码:")
         c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_admin_password_var, width=28, show="*"), 8, 1)
+        c_label(8, 2, "推送类型:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_target_var, width=14), 8, 3)
 
         self.email_provider_var.trace_add("write", lambda *_: self._refresh_provider_fields())
         self.cpa_auto_add_var.trace_add("write", lambda *_: self._refresh_cpa_fields())
@@ -3439,6 +3452,7 @@ class GrokRegisterGUI:
             config["grok2api_remote_base"] = self.grok2api_remote_base_var.get().strip()
             config["grok2api_remote_admin_username"] = self.grok2api_remote_admin_username_var.get().strip()
             config["grok2api_remote_admin_password"] = self.grok2api_remote_admin_password_var.get()
+            config["grok2api_remote_target"] = self.grok2api_remote_target_var.get().strip() or "build"
         except Exception:
             pass
         self.log("[*] 开始连通性检查...")
@@ -3566,6 +3580,7 @@ class GrokRegisterGUI:
         config["grok2api_remote_base"] = self.grok2api_remote_base_var.get().strip()
         config["grok2api_remote_admin_username"] = self.grok2api_remote_admin_username_var.get().strip()
         config["grok2api_remote_admin_password"] = self.grok2api_remote_admin_password_var.get()
+        config["grok2api_remote_target"] = self.grok2api_remote_target_var.get().strip() or "build"
         raw_paths = [x.strip() for x in self.cloudflare_paths_var.get().split(",") if x.strip()]
         if len(raw_paths) >= 4:
             config["cloudflare_path_domains"] = raw_paths[0] if raw_paths[0].startswith("/") else ("/" + raw_paths[0])
@@ -4219,10 +4234,9 @@ def run_registration_cli(count):
                             log_callback=lambda m: cli_log(f"[W{wid+1}] {m}"),
                         )
                         mark_slot_completed()
-                        # 每成功 3 个换 sticky / IP
-                        if local_success % 3 == 0:
-                            rotate_idx += 1
-                            cli_log(f"[W{wid+1}] [*] 已成功 {local_success} 个，下号换 IP #{rotate_idx}")
+                        # 每个账号完成后轮换节点与出口 IP，避免短时间内同 IP 集中注册触发风控降智
+                        rotate_idx += 1
+                        cli_log(f"[W{wid+1}] [*] 账号已完成，下号轮换节点 #{rotate_idx}")
                     except RegistrationCancelled:
                         break
                     except EmailDomainRejected as exc:
@@ -4504,6 +4518,23 @@ def run_registration_cli(count):
             if controller.should_stop():
                 break
             cli_log(f"--- 开始第 {i + 1}/{count} 个账号 ---")
+            # 节点轮换：每个新账号使用独立的新代理节点与干净的浏览器 Profile
+            if i > 0:
+                single_rotate_idx += 1
+                try:
+                    stop_browser(force=True)
+                    time.sleep(0.5)
+                except Exception:
+                    pass
+                try:
+                    px = pick_proxy_for_worker(0, single_rotate_idx)
+                    set_thread_proxy(px)
+                    cli_log(f"[*] 账号轮换节点 #{single_rotate_idx}: {redact_proxy(px) or '直连'}")
+                    start_browser(log_callback=cli_log)
+                    time.sleep(0.5)
+                except Exception as rot_exc:
+                    cli_log(f"[!] 轮换节点启动浏览器失败: {rot_exc}")
+                    record_proxy_boot_failure(px, rot_exc)
             try:
                 email = ""
                 dev_token = ""
@@ -4632,10 +4663,25 @@ def run_registration_cli(count):
             except AccountRetryNeeded as exc:
                 retry_count_for_slot += 1
                 if retry_count_for_slot <= max_slot_retry:
+                    single_rotate_idx += 1
+                    try:
+                        record_proxy_result(get_bound_proxy() or get_thread_proxy(), "risk", str(exc))
+                    except Exception:
+                        pass
                     cli_log(
-                        f"[!] 当前账号流程卡住，重试第 {retry_count_for_slot}/{max_slot_retry} 次: "
+                        f"[!] 当前账号流程卡住，更换节点重试第 {retry_count_for_slot}/{max_slot_retry} 次: "
                         f"{redact_sensitive_log_line(str(exc))}"
                     )
+                    try:
+                        stop_browser(force=True)
+                        time.sleep(0.5)
+                        px = pick_proxy_for_worker(0, single_rotate_idx)
+                        set_thread_proxy(px)
+                        cli_log(f"[*] 重启浏览器换节点 #{single_rotate_idx}: {redact_proxy(px) or '直连'}")
+                        start_browser(log_callback=cli_log)
+                        time.sleep(0.5)
+                    except Exception as rb_exc:
+                        cli_log(f"[!] 重启浏览器失败: {rb_exc}")
                 else:
                     kind = _cli_record_failure(exc)
                     retry_count_for_slot = 0
@@ -4701,8 +4747,12 @@ def run_registration_cli(count):
                 mark_slot_completed()
             if controller.should_stop():
                 break
-            # 每轮结束只关浏览器，不立刻再开。
-            # 下一轮 open_signup_page 会按需启动并导航到官网，避免空浏览器残留。
+            # 每轮结束关闭当前浏览器并清理会话
+            try:
+                stop_browser(force=True)
+                time.sleep(0.5)
+            except Exception:
+                pass
             if i >= count:
                 continue
             # 账号间随机间隔

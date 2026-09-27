@@ -41,6 +41,8 @@ THINKING_KEYS = (
     "reasoningContent",
     "thinking",
     "Thinking",
+    "reasoning",
+    "Reasoning",
 )
 ACCOUNT_ERROR_MARKERS = (
     "permission-denied",
@@ -60,7 +62,7 @@ HARD_TPS = 1000.0
 MIN_OUTPUT_TOKENS = 8
 MIN_GENERATION_MS = 1000
 MAX_OUTPUT_TOKENS = 48
-DEFAULT_TIMEOUT = 25
+DEFAULT_TIMEOUT = 45
 DEFAULT_WORKERS = 2
 MAX_CONTENT_CHARS = 400
 EARLY_STOP_ON_THINKING = True
@@ -144,9 +146,12 @@ def _int_field(payload: dict | None, *keys: str) -> int:
 def output_tokens_from_usage(usage: dict | None) -> int:
     if not isinstance(usage, dict):
         return 0
+    reasoning = _int_field(usage, "reasoning_tokens", "reasoningTokens")
+    if not reasoning and isinstance(usage.get("completion_tokens_details"), dict):
+        reasoning = _int_field(usage["completion_tokens_details"], "reasoning_tokens", "reasoningTokens")
     return max(
         _int_field(usage, "output_tokens", "completion_tokens", "completionTokens"),
-        _int_field(usage, "reasoning_tokens", "reasoningTokens"),
+        reasoning,
     )
 
 
@@ -161,6 +166,8 @@ def parse_sse_quality(lines) -> dict:
     for raw in lines:
         line = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
         line = line.strip()
+        if line.startswith(":"):
+            continue
         if not line.startswith("data:"):
             continue
         data = line[5:].strip()
@@ -177,10 +184,10 @@ def parse_sse_quality(lines) -> dict:
         usage = chunk.get("usage")
         if isinstance(usage, dict):
             usage_out = max(usage_out, output_tokens_from_usage(usage))
-            usage_reason = max(
-                usage_reason,
-                _int_field(usage, "reasoning_tokens", "reasoningTokens"),
-            )
+            reasoning = _int_field(usage, "reasoning_tokens", "reasoningTokens")
+            if not reasoning and isinstance(usage.get("completion_tokens_details"), dict):
+                reasoning = _int_field(usage["completion_tokens_details"], "reasoning_tokens", "reasoningTokens")
+            usage_reason = max(usage_reason, reasoning)
             # Billed reasoning_tokens alone is the 降智 pattern: usage is charged
             # but no thinking/reasoning text is streamed.
         choices = chunk.get("choices") or []
@@ -291,6 +298,7 @@ def probe_account(
         "stream": True,
         "max_tokens": max(8, int(max_tokens or MAX_OUTPUT_TOKENS)),
         "temperature": float(temperature),
+        "stream_options": {"include_usage": True},
     }
     kwargs = {
         "headers": _auth_headers(record),
@@ -299,6 +307,12 @@ def probe_account(
         "timeout": timeout,
         "stream": True,
     }
+    if not proxy:
+        try:
+            from advanced_proxy import current_http_proxy
+            proxy = current_http_proxy()
+        except Exception:
+            proxy = ""
     if proxy:
         kwargs["proxy"] = proxy
 
@@ -340,6 +354,8 @@ def probe_account(
             for line in iterator:
                 raw = line.decode("utf-8", "replace") if isinstance(line, (bytes, bytearray)) else str(line or "")
                 parsed_lines.append(line)
+                if "[DONE]" in raw:
+                    break
                 if first_token_at <= 0:
                     if '"content"' in raw or any(key in raw for key in THINKING_KEYS):
                         first_token_at = clock()
@@ -351,6 +367,9 @@ def probe_account(
                     and (clock() - first_token_at) * 1000 >= max(0, int(early_stop_ms or 0))
                 ):
                     result["early_stop"] = True
+                    break
+                # 超过超时时间跳出，避免连接保持挂死
+                if (clock() - start) >= timeout:
                     break
         except Exception as exc:
             if not parsed_lines:
@@ -381,7 +400,8 @@ def probe_account(
         chars = int(parsed.get("content_chars") or 0)
         out_tokens = max(1, chars // 4) if chars else 0
     tps = (out_tokens * 1000.0 / gen_ms) if gen_ms > 0 and out_tokens > 0 else 0.0
-    has_thinking = bool(parsed.get("has_thinking")) or reason_tokens > 0
+    # Strictly require explicit streamed thinking text. Billed reasoning_tokens alone is the 降智 pattern.
+    has_thinking = bool(parsed.get("has_thinking"))
     lower_preview = str(parsed.get("preview") or "").lower()
     if any(marker in lower_preview for marker in ACCOUNT_ERROR_MARKERS) and out_tokens < min_output_tokens:
         result.update(

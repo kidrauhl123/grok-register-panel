@@ -125,7 +125,7 @@ CPA_GROK_HEADERS = {
     "x-grok-client-identifier": "grok-pager",
     "x-grok-client-version": GROK_VERSION,
 }
-CPA_PROBE_MODEL = "grok-4.5"
+CPA_PROBE_MODEL = os.environ.get("CPA_PROBE_MODEL", "grok-4.7")
 CPA_PROBE_URL = f"{CPA_GROK_BASE_URL}/responses"
 GROK_HOME_URL = "https://grok.com/"
 

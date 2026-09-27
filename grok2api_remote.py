@@ -6,6 +6,7 @@ import json
 import threading
 import urllib.parse
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 _lock = threading.Lock()
 _token = ""
@@ -136,15 +137,136 @@ def _parse_import(response, secrets=()):
     return completed
 
 
-def maybe_import_web_sso(sso: str, email: str = "", log=None) -> bool:
+def maybe_import_build_account(
+    record: dict | str | Path,
+    email: str = "",
+    log=None,
+    verdict: str = "",
+    force: bool = False,
+) -> bool:
     global _token
     cfg = _config()
     if not bool(cfg.get("grok2api_auto_add_remote", False)):
         return False
+    logger = log or (lambda _message: None)
+    target = str(cfg.get("grok2api_remote_target", "build") or "build").strip().lower()
+    if not force and target not in ("build", "both", "all"):
+        return False
+
+    only_healthy = cfg.get("grok2api_remote_only_healthy", True)
+    if isinstance(only_healthy, str):
+        only_healthy = only_healthy.strip().lower() not in ("0", "false", "no", "off")
+    if bool(only_healthy) and verdict and verdict != "healthy":
+        logger("⚠️ 账号质量裁决为 %s（非 healthy），已拦截远程导入 xai.premsir" % verdict)
+        return False
+
     base = str(cfg.get("grok2api_remote_base") or "").strip()
     username = str(cfg.get("grok2api_remote_admin_username") or "").strip()
     password = str(cfg.get("grok2api_remote_admin_password") or "")
+    if not base or not username or not password:
+        if bool(cfg.get("grok2api_auto_add_remote", False)):
+            logger("chenyme grok2api 远端导入未配置 base/用户名/密码，已跳过")
+        return False
+
+    if isinstance(record, dict):
+        email = email or str(record.get("email") or "").strip()
+        data = json.dumps(record, ensure_ascii=False).encode("utf-8")
+    elif isinstance(record, (str, Path)):
+        p = Path(record)
+        if p.is_file():
+            data = p.read_bytes()
+            try:
+                parsed = json.loads(data.decode("utf-8"))
+                email = email or str(parsed.get("email") or "").strip()
+            except Exception:
+                pass
+        else:
+            data = str(record).encode("utf-8")
+    else:
+        logger("grok2api Build 导入缺少有效的 record 数据")
+        return False
+
+    api_base = _api_base(base)
+    endpoint = api_base + "/accounts/import"
+    from curl_cffi import CurlMime
+
+    filename = "xai-%s.json" % (email or "account")
+    for attempt in range(2):
+        access = _admin_token(api_base, username, password, force=attempt > 0)
+        form = CurlMime()
+        form.addpart(
+            name="file",
+            filename=filename,
+            content_type="application/json; charset=utf-8",
+            data=data,
+        )
+        try:
+            response = _post(
+                endpoint,
+                headers={"Authorization": "Bearer %s" % access, "Accept": "text/event-stream"},
+                multipart=form,
+                timeout=60,
+            )
+        finally:
+            form.close()
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status == 401 and attempt == 0:
+            with _lock:
+                global _token
+                _token = ""
+            continue
+        if not 200 <= status < 300:
+            raise Grok2APIRemoteError("grok2api Build 凭据导入失败: HTTP %s" % status)
+        result = _parse_import(response, (access,))
+        summary = ", ".join(
+            "%s=%s" % (key, result.get(key))
+            for key in ("created", "updated", "skipped", "synced", "syncFailed")
+            if result.get(key) is not None
+        )
+        if int(result.get("syncFailed") or 0):
+            raise Grok2APIRemoteError("Build 凭据已导入，但初始同步失败" + (": %s" % summary if summary else ""))
+        logger(
+            "已导入 chenyme grok2api Grok Build"
+            + (": %s" % summary if summary else "")
+            + (" (%s)" % email if email else "")
+        )
+        return True
+    raise Grok2APIRemoteError("grok2api 管理员认证已失效")
+
+
+def maybe_import_web_sso(
+    sso: str,
+    email: str = "",
+    log=None,
+    verdict: str = "",
+    force: bool = False,
+) -> bool:
+    global _token
+    cfg = _config()
+    if not bool(cfg.get("grok2api_auto_add_remote", False)):
+        return False
     logger = log or (lambda _message: None)
+
+    target = str(cfg.get("grok2api_remote_target", "build") or "build").strip().lower()
+    if not force and target not in ("web", "both", "all"):
+        if target == "build" and email:
+            cpa_dir = Path(str(cfg.get("cpa_auth_dir", "cpa_auth") or "cpa_auth"))
+            if not cpa_dir.is_absolute():
+                cpa_dir = Path(__file__).resolve().parent / cpa_dir
+            cpa_file = cpa_dir / f"xai-{email}.json"
+            if cpa_file.exists():
+                return maybe_import_build_account(cpa_file, email=email, log=logger, verdict=verdict, force=True)
+        return False
+
+    only_healthy = cfg.get("grok2api_remote_only_healthy", True)
+    if isinstance(only_healthy, str):
+        only_healthy = only_healthy.strip().lower() not in ("0", "false", "no", "off")
+    if bool(only_healthy) and verdict and verdict != "healthy":
+        logger("⚠️ 账号质量裁决为 %s（非 healthy），已拦截远程导入 xai.premsir" % verdict)
+        return False
+    base = str(cfg.get("grok2api_remote_base") or "").strip()
+    username = str(cfg.get("grok2api_remote_admin_username") or "").strip()
+    password = str(cfg.get("grok2api_remote_admin_password") or "")
     token = str(sso or "").strip()
     if token.lower().startswith("sso="):
         token = token[4:]
@@ -197,3 +319,26 @@ def maybe_import_web_sso(sso: str, email: str = "", log=None) -> bool:
         )
         return True
     raise Grok2APIRemoteError("grok2api 管理员认证已失效")
+
+
+def maybe_import_remote(
+    record: dict | str | Path | None = None,
+    sso: str = "",
+    email: str = "",
+    log=None,
+    verdict: str = "",
+) -> bool:
+    """统一远程推送入口：根据 grok2api_remote_target 推送 Grok Build 或 Web SSO。"""
+    cfg = _config()
+    if not bool(cfg.get("grok2api_auto_add_remote", False)):
+        return False
+    target = str(cfg.get("grok2api_remote_target", "build") or "build").strip().lower()
+    success = False
+    if target in ("build", "both", "all") and record:
+        if maybe_import_build_account(record, email=email, log=log, verdict=verdict, force=True):
+            success = True
+    if target in ("web", "both", "all") and sso:
+        if maybe_import_web_sso(sso, email=email, log=log, verdict=verdict, force=True):
+            success = True
+    return success
+

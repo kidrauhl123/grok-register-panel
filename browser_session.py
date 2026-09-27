@@ -777,6 +777,15 @@ def create_browser_options(unique_profile=True) -> dict:
     headed_env = str(os.environ.get("GROK_HEADED", "") or "").strip().lower()
     force_headless = headless_env in {"1", "true", "yes", "on"}
     force_headed = headed_env in {"1", "true", "yes", "on"}
+    # On Linux, auto-detect active X11 display socket if DISPLAY is missing
+    if os.name != "nt" and not os.environ.get("DISPLAY"):
+        for _disp in (":1", ":14", ":10", ":2", ":0"):
+            if os.path.exists(f"/tmp/.X11-unix/X{_disp.lstrip(':')}"):
+                os.environ["DISPLAY"] = _disp
+                break
+    # Default to headed mode on Linux when an X11 display is available
+    if not force_headless and not force_headed and bool(os.environ.get("DISPLAY")):
+        force_headed = True
     use_headless = bool(force_headless) and not force_headed
     browser_os = resolve_browser_os()
 
