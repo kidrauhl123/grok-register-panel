@@ -337,16 +337,16 @@ def _native_fill_profile(given_name: str, family_name: str, password: str) -> bo
     secret = _native_input_candidates("password")
     if not given or not family or not secret:
         return False
-    # 模拟真实人类依次填写表单：名 -> 停顿换输入框 -> 姓 -> 停顿换密码框 -> 密码
+    # 模拟真实人类依次填写表单：名 -> 切换输入框 -> 姓 -> 切换密码框 -> 密码
     if not _native_type_element(given[0], given_name):
         return False
-    time.sleep(random.uniform(0.7, 1.6))
+    time.sleep(random.uniform(0.35, 0.75))
     if not _native_type_element(family[0], family_name):
         return False
-    time.sleep(random.uniform(0.9, 2.0))
+    time.sleep(random.uniform(0.35, 0.75))
     if not _native_type_element(secret[0], password):
         return False
-    time.sleep(random.uniform(1.2, 2.4))
+    time.sleep(random.uniform(0.4, 0.8))
     return True
 
 
@@ -780,14 +780,8 @@ def open_signup_page(log_callback=None, cancel_callback=None):
                 pass
             raise Exception(f"打开注册页失败: {e2}") from e2
 
-    # 模拟人类打开页面后的视线浏览与 SPA/Turnstile 初始化时间
-    initial_pause = random.uniform(2.5, 4.0)
-    if log_callback:
-        log_callback(f"[*] 注册页已打开，拟人化视线浏览 {initial_pause:.1f}s...")
-    sleep_with_cancel(initial_pause, cancel_callback)
-    _human_mouse_drift(count=2)
-    if log_callback:
-        log_callback(f"[*] 当前URL: {active_page().url if active_page() else ''}")
+    # 等 SPA/CF 把壳渲染出来，再点邮箱注册
+    sleep_with_cancel(1.0, cancel_callback)
     if not _wait_signup_shell(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback):
         if log_callback:
             log_callback("[!] 注册页壳为空，尝试 reload 恢复")
@@ -1000,7 +994,7 @@ def _wait_email_page_advanced(email, wait=4.0, cancel_callback=None):
     return False
 
 
-def fill_email_and_submit(timeout=10, log_callback=None, cancel_callback=None):
+def fill_email_and_submit(timeout=35, log_callback=None, cancel_callback=None):
     raise_if_cancelled(cancel_callback)
     email, dev_token = _deps['get_email_and_token']()
     if not email or not dev_token:
@@ -1224,10 +1218,9 @@ return candidates[0].text || true;
                 log_callback(f"[Debug] 邮箱输入框已出现，但写入失败: {filled}")
             sleep_with_cancel(0.5, cancel_callback)
             continue
-        email_pause = random.uniform(2.0, 3.8)
+        email_pause = random.uniform(1.2, 2.2)
         if log_callback:
             log_callback(f"[*] 邮箱已输入，拟人化核对停留 {email_pause:.1f}s 后提交...")
-        _human_mouse_drift(count=1)
         sleep_with_cancel(email_pause, cancel_callback)
         clicked = _native_click_action(
             (
@@ -1408,10 +1401,9 @@ return false;
         raise Exception("获取验证码失败")
     clean_code = str(code).replace("-", "").strip()
     # 模拟真实人类查收验证码、阅读并切回窗口的自然延迟
-    code_read_pause = random.uniform(2.5, 4.5)
+    code_read_pause = random.uniform(1.5, 2.8)
     if log_callback:
         log_callback(f"[*] 已收到验证码，模拟查收并切换窗口停留 {code_read_pause:.1f}s...")
-    _human_mouse_drift(count=1)
     sleep_with_cancel(code_read_pause, cancel_callback)
     deadline = time.time() + timeout
 
@@ -1499,10 +1491,9 @@ return 'not-ready';
             continue
 
         # 拟人化随机停留：模拟人类核对验证码并移动鼠标到确认按钮
-        otp_pause = random.uniform(2.0, 3.8)
+        otp_pause = random.uniform(1.2, 2.2)
         if log_callback:
             log_callback(f"[*] 验证码已输入，拟人化核对停留 {otp_pause:.1f}s 后确认...")
-        _human_mouse_drift(count=1)
         sleep_with_cancel(otp_pause, cancel_callback)
         clicked = _native_click_action(("确认邮箱", "继续", "下一步", "confirm", "continue", "next", "confirmar", "confirmer", "bestätigen", "確認"))
         if not clicked:
@@ -1788,16 +1779,11 @@ def _try_click_turnstile_frame(log_callback=None):
                 log_callback("[Debug] Turnstile frame body 未渲染好，跳过")
             return
 
-        click_x = round(random.uniform(25.0, 32.0), 1)
-        click_y = round(body_info["h"] / 2 + random.uniform(-3.5, 3.5), 1)
-        try:
-            turnstile_frame.hover("body", position={"x": click_x, "y": click_y}, timeout=2000)
-            time.sleep(random.uniform(0.12, 0.28))
-        except Exception:
-            pass
-        turnstile_frame.click("body", position={"x": click_x, "y": click_y}, delay=random.randint(50, 120), timeout=3000)
+        click_x = 24
+        click_y = round(body_info["h"] / 2, 1)
+        turnstile_frame.click("body", position={"x": click_x, "y": click_y}, delay=random.randint(45, 95), timeout=3000)
         if log_callback:
-            log_callback(f"[*] 已拟人化点击 Turnstile frame body ({click_x:.1f}, {click_y:.1f})")
+            log_callback(f"[*] 已点击 Turnstile frame body ({click_x}, {click_y:.0f})")
         return
     except Exception as frame_click_exc:
         if log_callback:
@@ -1811,13 +1797,11 @@ def _try_click_turnstile_frame(log_callback=None):
         if iframe_el:
             box = iframe_el.bounding_box()
             if box and box["width"] > 0:
-                px = box["x"] + random.uniform(25.0, 32.0)
-                py = box["y"] + box["height"] / 2 + random.uniform(-3.5, 3.5)
-                raw_page.mouse.move(px, py, steps=random.randint(10, 20))
-                time.sleep(random.uniform(0.1, 0.25))
-                raw_page.mouse.click(px, py, delay=random.randint(50, 120))
+                px = box["x"] + 24
+                py = box["y"] + box["height"] / 2
+                raw_page.mouse.click(px, py, delay=random.randint(45, 95))
                 if log_callback:
-                    log_callback(f"[*] 已在 page 级拟人化点击 Turnstile iframe ({px:.1f}, {py:.1f})")
+                    log_callback(f"[*] 已在 page 级点击 Turnstile iframe ({px:.0f}, {py:.0f})")
                 return
     except Exception as page_click_exc:
         if log_callback:
@@ -2196,11 +2180,10 @@ return 'ready-to-submit';
 
         if submit_state == "ready-to-submit":
             last_state = "ready-to-submit"
-            # 拟人化随机停留：模拟人类填写完姓名密码后检查表单并移动鼠标
-            profile_pause = random.uniform(3.2, 5.2)
+            # 拟人化随机停留：模拟人类填写完姓名密码后核对表单
+            profile_pause = random.uniform(1.5, 2.5)
             if log_callback:
                 log_callback(f"[*] 表单资料已填写就绪，拟人化停留 {profile_pause:.1f}s 后提交...")
-            _human_mouse_drift(count=2)
             sleep_with_cancel(profile_pause, cancel_callback)
             clicked_native = _native_click_action(
                 (

@@ -225,16 +225,9 @@ class CamoufoxElement:
                 self._locator.fill("")
             except Exception:
                 pass
-            time.sleep(random.uniform(0.15, 0.30))
-        # 人类化真实按键输入
-        for i, char in enumerate(text):
-            key_dwell = random.randint(45, 95)
-            self._locator.press_sequentially(char, delay=key_dwell)
-            # 特殊符号或间隔停顿（模拟人类换指/寻找按键）
-            if char in ("@", ".", "-", "_") or ((i + 1) % random.randint(5, 7) == 0 and i + 1 < len(text)):
-                time.sleep(random.uniform(0.16, 0.36))
-            else:
-                time.sleep(random.uniform(0.06, 0.16))
+            time.sleep(random.uniform(0.08, 0.18))
+        # 拟人化真实按键输入：直接使用 Playwright press_sequentially 顺序击键（isTrusted=true）
+        self._locator.press_sequentially(text, delay=random.randint(45, 80))
 
     def attr(self, name: str) -> str:
         try:
