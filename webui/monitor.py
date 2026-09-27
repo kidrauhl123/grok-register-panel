@@ -1362,14 +1362,17 @@ HTML = r"""<!DOCTYPE html>
   .list-pager button:disabled { opacity: .4; cursor: not-allowed; }
   .control-grid {
     display: grid;
-    grid-template-columns: minmax(220px, 1.6fr) minmax(150px, .9fr) repeat(4, minmax(100px, .55fr)) minmax(258px, auto);
+    grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 0.9fr) repeat(3, minmax(90px, 0.65fr)) auto;
     gap: 12px;
     align-items: end;
   }
   .control-actions {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
     gap: 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .control-panel { padding: 12px 16px; }
   .control-panel .section-head { min-height: 24px; margin-bottom: 8px; }
@@ -2304,9 +2307,8 @@ HTML = r"""<!DOCTYPE html>
       <div class="field"><label for="batch_count">目标数量</label>
         <input type="number" id="batch_count" min="1" max="500" value="40" title="单批运行的目标个数，或持续编排模式下追加的账号总数" oninput="markControlModified()"/>
       </div>
-      <input type="hidden" id="add_count" value="40"/>
-      <div class="field"><label for="risk_pause">风控阈值</label>
-        <input type="number" id="risk_pause" min="1" max="50" value="10" oninput="markControlModified()"/>
+      <div class="field"><label for="risk_pause" title="单批累计出现指定数量的降智或风控账号时自动暂停任务并冷却节点">降智/风控阈值</label>
+        <input type="number" id="risk_pause" min="1" max="50" value="10" title="单批累计出现指定数量的降智或风控账号时自动暂停任务并冷却节点" oninput="markControlModified()"/>
       </div>
       <div class="control-actions">
         <button class="primary" id="btn-start" onclick="doStart()">启动任务</button>
@@ -2314,6 +2316,7 @@ HTML = r"""<!DOCTYPE html>
         <button onclick="saveCtrl()">保存设置</button>
       </div>
     </div>
+    <input type="hidden" id="add_count" value="40"/>
     <div class="msg" id="ctrl-msg" role="status" aria-live="polite"></div>
   </section>
 

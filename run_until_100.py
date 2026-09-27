@@ -169,17 +169,20 @@ def lookup_asn(ip: str, timeout: float = 5.0) -> dict:
 
 
 def count_risk(logpath: Path) -> int:
-    """只计注册风控拒绝次数（SSO超时/其它失败不计）。
+    """计注册风控拒绝与降智拦截次数（SSO超时/网络等普通重试不计）。
 
-    优先 [结果] status=risk（每号一行）；否则 失败 [注册风控]。
+    包含：
+    1. 传统风控：[结果] status=risk 或 [-] 失败 [注册风控]
+    2. 现代降智：❌ 降智测试: hard / burst
     """
     if not logpath.exists():
         return 0
     text = logpath.read_text(errors="replace")
-    n = len(re.findall(r"\[结果\] status=risk\b", text))
-    if n > 0:
-        return n
-    return len(re.findall(r"\[-\] 失败 \[注册风控\]", text))
+    n_risk = len(re.findall(r"\[结果\] status=risk\b", text))
+    if n_risk == 0:
+        n_risk = len(re.findall(r"\[-\] 失败 \[注册风控\]", text))
+    n_degraded = len(re.findall(r"❌\s*降智测试:\s*(?:hard|burst)", text))
+    return n_risk + n_degraded
 
 
 def count_ok(logpath: Path) -> int:
@@ -189,7 +192,7 @@ def count_ok(logpath: Path) -> int:
 
 
 def analyze_risks_and_expand(logpath: Path) -> list:
-    """Add ASN to blacklist if risk-only and enough samples. Bounded time."""
+    """Add ASN to blacklist if risk/degradation and enough samples. Bounded time."""
     added = []
     t0 = time.time()
     blocked = read_blocklist_asns()
@@ -207,15 +210,14 @@ def analyze_risks_and_expand(logpath: Path) -> list:
             im = re.search(r"出口IP=([\d.]+)", msg)
             if im:
                 worker_ip[w] = im.group(1)
-            # only count unique risk via result line or failure line once
-            if "[结果] status=risk" in msg:
+            # only count unique risk/degraded via result line or failure line once
+            if "[结果] status=risk" in msg or "降智测试: hard" in msg or "降智测试: burst" in msg:
                 im2 = re.search(r"ip=([\d.]+)", msg)
                 if im2:
                     risk_ips.append(im2.group(1))
                 elif worker_ip.get(w):
                     risk_ips.append(worker_ip[w])
             elif "[-] 失败 [注册风控]" in msg and worker_ip.get(w):
-                # only if no result line captured this ip already this second - still may dup
                 risk_ips.append(worker_ip[w])
             if "[结果] status=ok" in msg:
                 im2 = re.search(r"ip=([\d.]+)", msg)
@@ -338,7 +340,7 @@ def main():
                 kill_batch()
                 break
             if risks >= RISK_PAUSE:
-                log(f"  HIT {RISK_PAUSE} 注册风控 rejects (risk={risks}), pause+blacklist")
+                log(f"  HIT {RISK_PAUSE} 降智/风控 rejects (risk={risks}), pause+blacklist")
                 kill_batch()
                 try:
                     added = analyze_risks_and_expand(logpath)
