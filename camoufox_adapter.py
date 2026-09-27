@@ -177,16 +177,23 @@ class CamoufoxElement:
         by_js=False/None（默认）→ Playwright 真实点击（isTrusted=true）
         by_js=True             → JS click（不触发真实鼠标事件）
 
-        人类化策略：点击前 50-200ms 随机延迟
+        人类化策略：
+        - 先悬停（hover），触发真实 mouseenter / mouseover / mousemove 事件
+        - 点击前 80-220ms 随机延迟（视线对齐反应时间）
+        - 真实鼠标物理下压停留时间（delay=50-130ms，避免 mousedown/mouseup 同一微秒）
         """
         import random
 
         if not by_js:
-            time.sleep(random.uniform(0.05, 0.20))
-        if by_js:
-            self._locator.evaluate("el => el.click()")
+            try:
+                self._locator.hover(timeout=int(min(timeout, 3) * 1000))
+                time.sleep(random.uniform(0.08, 0.20))
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.06, 0.16))
+            self._locator.click(timeout=int(timeout * 1000), delay=random.randint(50, 130))
         else:
-            self._locator.click(timeout=int(timeout * 1000))
+            self._locator.evaluate("el => el.click()")
 
     def input(self, text: str, clear: bool = True, by_js: bool = False, **kw):
         """输入文本。
@@ -195,8 +202,9 @@ class CamoufoxElement:
         by_js=True        → 用 evaluate 直接设值
 
         人类化策略：
-        - 每字符间延迟随机化（30-120ms），避免机械等速
-        - 偶尔短暂停顿（模拟思考）
+        - 真实按键下压停留时间（delay=45-95ms，消除机械瞬间触发）
+        - 字符间延迟随机化（70-170ms），符合真实打字节奏
+        - 遇到 @、.、- 或每 5-7 个字符插入自然停顿（160-360ms）
         """
         import random
 
@@ -213,15 +221,20 @@ class CamoufoxElement:
             )
             return
         if clear:
-            self._locator.fill("")
-        # 人类化输入：每字符随机延迟 30-120ms
+            try:
+                self._locator.fill("")
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.15, 0.30))
+        # 人类化真实按键输入
         for i, char in enumerate(text):
-            self._locator.press_sequentially(char, delay=0)
-            # 每 5-8 个字符偶尔插入一次较长停顿（120-300ms）
-            if (i + 1) % random.randint(5, 8) == 0 and i + 1 < len(text):
-                time.sleep(random.uniform(0.12, 0.30))
+            key_dwell = random.randint(45, 95)
+            self._locator.press_sequentially(char, delay=key_dwell)
+            # 特殊符号或间隔停顿（模拟人类换指/寻找按键）
+            if char in ("@", ".", "-", "_") or ((i + 1) % random.randint(5, 7) == 0 and i + 1 < len(text)):
+                time.sleep(random.uniform(0.16, 0.36))
             else:
-                time.sleep(random.uniform(0.03, 0.12))
+                time.sleep(random.uniform(0.06, 0.16))
 
     def attr(self, name: str) -> str:
         try:

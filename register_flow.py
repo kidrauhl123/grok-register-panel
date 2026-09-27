@@ -166,6 +166,23 @@ def _native_click_action(keywords, deny_keywords=()) -> str:
     return ""
 
 
+def _human_mouse_drift(count: int = 2) -> None:
+    """模拟人类在页面停留、思考或阅读时手部的轻微鼠标移动。"""
+    try:
+        raw = getattr(page, "raw_page", None)
+        if raw is None:
+            return
+        viewport = getattr(raw, "viewport_size", None) or {"width": 1280, "height": 800}
+        w, h = viewport.get("width", 1280), viewport.get("height", 800)
+        for _ in range(count):
+            target_x = random.randint(int(w * 0.25), int(w * 0.75))
+            target_y = random.randint(int(h * 0.25), int(h * 0.75))
+            raw.mouse.move(target_x, target_y, steps=random.randint(10, 22))
+            time.sleep(random.uniform(0.12, 0.32))
+    except Exception:
+        pass
+
+
 def _native_type_element(element, value: str, per_char: bool = True) -> bool:
     """使用 Playwright 真实键盘事件输入，避免 JS setter 产生 isTrusted=false 事件。"""
     if not element or not _native_is_usable(element):
@@ -173,13 +190,9 @@ def _native_type_element(element, value: str, per_char: bool = True) -> bool:
     text = str(value or "")
     try:
         element.click(timeout=3)
-        if per_char:
-            for index, char in enumerate(text):
-                element.input(char, clear=index == 0, by_js=False)
-                if index + 1 < len(text):
-                    time.sleep(random.uniform(0.02, 0.06))
-        else:
-            element.input(text, clear=True, by_js=False)
+        time.sleep(random.uniform(0.25, 0.55))
+        element.input(text, clear=True, by_js=False)
+        time.sleep(random.uniform(0.30, 0.65))
         try:
             current = str(element.property("value") or "")
         except Exception:
@@ -257,7 +270,13 @@ def _native_fill_code(code: str) -> str:
         if pw.startswith("filled"):
             return pw
         return "not-ready"
-    if all(_native_type_element(box, char, per_char=False) for box, char in zip(boxes, code)):
+    success = True
+    for box, char in zip(boxes, code):
+        if not _native_type_element(box, char, per_char=False):
+            success = False
+            break
+        time.sleep(random.uniform(0.12, 0.28))
+    if success:
         return "filled-boxes"
     pw = _playwright_fill_otp(code)
     if pw.startswith("filled"):
@@ -293,16 +312,20 @@ def _playwright_fill_otp(code: str) -> str:
             try:
                 loc = frame.locator(sel).first
                 loc.wait_for(state="attached", timeout=800)
-                loc.click(force=True, timeout=800)
-                try:
-                    loc.fill(digits)
-                except Exception:
-                    loc.press_sequentially(digits, delay=30)
+                time.sleep(random.uniform(0.15, 0.35))
+                loc.click(delay=random.randint(45, 100), timeout=800)
+                time.sleep(random.uniform(0.2, 0.45))
+                for char in digits:
+                    loc.press_sequentially(char, delay=random.randint(45, 90))
+                    time.sleep(random.uniform(0.08, 0.20))
                 return "filled-playwright"
             except Exception:
                 continue
     try:
-        raw.keyboard.type(digits, delay=40)
+        time.sleep(random.uniform(0.2, 0.45))
+        for char in digits:
+            raw.keyboard.type(char, delay=random.randint(45, 90))
+            time.sleep(random.uniform(0.08, 0.20))
         return "filled-keyboard"
     except Exception:
         return "not-ready"
@@ -314,13 +337,17 @@ def _native_fill_profile(given_name: str, family_name: str, password: str) -> bo
     secret = _native_input_candidates("password")
     if not given or not family or not secret:
         return False
-    return all(
-        (
-            _native_type_element(given[0], given_name),
-            _native_type_element(family[0], family_name),
-            _native_type_element(secret[0], password),
-        )
-    )
+    # 模拟真实人类依次填写表单：名 -> 停顿换输入框 -> 姓 -> 停顿换密码框 -> 密码
+    if not _native_type_element(given[0], given_name):
+        return False
+    time.sleep(random.uniform(0.7, 1.6))
+    if not _native_type_element(family[0], family_name):
+        return False
+    time.sleep(random.uniform(0.9, 2.0))
+    if not _native_type_element(secret[0], password):
+        return False
+    time.sleep(random.uniform(1.2, 2.4))
+    return True
 
 
 _SIGNUP_PROBE_JS = r"""
@@ -621,7 +648,7 @@ def click_email_signup_button(timeout=10, log_callback=None, cancel_callback=Non
         if native_clicked:
             if log_callback:
                 log_callback(f"[*] 已点击「使用邮箱注册」按钮（原生事件）: {native_clicked}")
-            sleep_with_cancel(0.8, cancel_callback)
+            sleep_with_cancel(random.uniform(1.2, 2.2), cancel_callback)
             return True
 
         try:
@@ -753,8 +780,12 @@ def open_signup_page(log_callback=None, cancel_callback=None):
                 pass
             raise Exception(f"打开注册页失败: {e2}") from e2
 
-    # 等 SPA/CF 把壳渲染出来，再点邮箱注册
-    sleep_with_cancel(1.0, cancel_callback)
+    # 模拟人类打开页面后的视线浏览与 SPA/Turnstile 初始化时间
+    initial_pause = random.uniform(2.5, 4.0)
+    if log_callback:
+        log_callback(f"[*] 注册页已打开，拟人化视线浏览 {initial_pause:.1f}s...")
+    sleep_with_cancel(initial_pause, cancel_callback)
+    _human_mouse_drift(count=2)
     if log_callback:
         log_callback(f"[*] 当前URL: {active_page().url if active_page() else ''}")
     if not _wait_signup_shell(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback):
@@ -1193,7 +1224,11 @@ return candidates[0].text || true;
                 log_callback(f"[Debug] 邮箱输入框已出现，但写入失败: {filled}")
             sleep_with_cancel(0.5, cancel_callback)
             continue
-        sleep_with_cancel(0.8, cancel_callback)
+        email_pause = random.uniform(2.0, 3.8)
+        if log_callback:
+            log_callback(f"[*] 邮箱已输入，拟人化核对停留 {email_pause:.1f}s 后提交...")
+        _human_mouse_drift(count=1)
+        sleep_with_cancel(email_pause, cancel_callback)
         clicked = _native_click_action(
             (
                 "注册", "继续", "下一步", "确认", "sign up", "signup", "continue", "next", "create account",
@@ -1372,6 +1407,12 @@ return false;
     if not code:
         raise Exception("获取验证码失败")
     clean_code = str(code).replace("-", "").strip()
+    # 模拟真实人类查收验证码、阅读并切回窗口的自然延迟
+    code_read_pause = random.uniform(2.5, 4.5)
+    if log_callback:
+        log_callback(f"[*] 已收到验证码，模拟查收并切换窗口停留 {code_read_pause:.1f}s...")
+    _human_mouse_drift(count=1)
+    sleep_with_cancel(code_read_pause, cancel_callback)
     deadline = time.time() + timeout
 
     while time.time() < deadline:
@@ -1457,11 +1498,11 @@ return 'not-ready';
             sleep_with_cancel(0.5, cancel_callback)
             continue
 
-        import random
-        # 拟人化随机停留：模拟人类查看验证码后核对一两秒再点击确认
-        otp_pause = random.uniform(1.2, 2.4)
+        # 拟人化随机停留：模拟人类核对验证码并移动鼠标到确认按钮
+        otp_pause = random.uniform(2.0, 3.8)
         if log_callback:
-            log_callback(f"[*] 验证码已输入，拟人化停留 {otp_pause:.1f}s 后确认...")
+            log_callback(f"[*] 验证码已输入，拟人化核对停留 {otp_pause:.1f}s 后确认...")
+        _human_mouse_drift(count=1)
         sleep_with_cancel(otp_pause, cancel_callback)
         clicked = _native_click_action(("确认邮箱", "继续", "下一步", "confirm", "continue", "next", "confirmar", "confirmer", "bestätigen", "確認"))
         if not clicked:
@@ -1747,11 +1788,16 @@ def _try_click_turnstile_frame(log_callback=None):
                 log_callback("[Debug] Turnstile frame body 未渲染好，跳过")
             return
 
-        click_x = 24
-        click_y = body_info["h"] / 2
-        turnstile_frame.click("body", position={"x": click_x, "y": click_y}, timeout=3000)
+        click_x = round(random.uniform(25.0, 32.0), 1)
+        click_y = round(body_info["h"] / 2 + random.uniform(-3.5, 3.5), 1)
+        try:
+            turnstile_frame.hover("body", position={"x": click_x, "y": click_y}, timeout=2000)
+            time.sleep(random.uniform(0.12, 0.28))
+        except Exception:
+            pass
+        turnstile_frame.click("body", position={"x": click_x, "y": click_y}, delay=random.randint(50, 120), timeout=3000)
         if log_callback:
-            log_callback(f"[*] 已点击 Turnstile frame body ({click_x}, {click_y:.0f})")
+            log_callback(f"[*] 已拟人化点击 Turnstile frame body ({click_x:.1f}, {click_y:.1f})")
         return
     except Exception as frame_click_exc:
         if log_callback:
@@ -1765,11 +1811,13 @@ def _try_click_turnstile_frame(log_callback=None):
         if iframe_el:
             box = iframe_el.bounding_box()
             if box and box["width"] > 0:
-                px = box["x"] + 24
-                py = box["y"] + box["height"] / 2
-                raw_page.mouse.click(px, py)
+                px = box["x"] + random.uniform(25.0, 32.0)
+                py = box["y"] + box["height"] / 2 + random.uniform(-3.5, 3.5)
+                raw_page.mouse.move(px, py, steps=random.randint(10, 20))
+                time.sleep(random.uniform(0.1, 0.25))
+                raw_page.mouse.click(px, py, delay=random.randint(50, 120))
                 if log_callback:
-                    log_callback(f"[*] 已在 page 级点击 Turnstile iframe ({px:.0f}, {py:.0f})")
+                    log_callback(f"[*] 已在 page 级拟人化点击 Turnstile iframe ({px:.1f}, {py:.1f})")
                 return
     except Exception as page_click_exc:
         if log_callback:
@@ -2148,11 +2196,11 @@ return 'ready-to-submit';
 
         if submit_state == "ready-to-submit":
             last_state = "ready-to-submit"
-            import random
             # 拟人化随机停留：模拟人类填写完姓名密码后检查表单并移动鼠标
-            profile_pause = random.uniform(2.5, 4.2)
+            profile_pause = random.uniform(3.2, 5.2)
             if log_callback:
                 log_callback(f"[*] 表单资料已填写就绪，拟人化停留 {profile_pause:.1f}s 后提交...")
+            _human_mouse_drift(count=2)
             sleep_with_cancel(profile_pause, cancel_callback)
             clicked_native = _native_click_action(
                 (
