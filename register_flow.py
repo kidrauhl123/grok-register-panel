@@ -253,7 +253,15 @@ def _native_input_candidates(kind: str):
 
 def _native_fill_email(email: str) -> bool:
     candidates = _native_input_candidates("email")
-    return bool(candidates and _native_type_element(candidates[0], email))
+    if not candidates:
+        return False
+    try:
+        cur = str(candidates[0].property("value") or "").strip()
+        if cur.lower() == email.lower():
+            return True
+    except Exception:
+        pass
+    return bool(_native_type_element(candidates[0], email))
 
 
 def _native_fill_code(code: str) -> str:
@@ -995,7 +1003,7 @@ def _wait_email_page_advanced(email, wait=9.0, cancel_callback=None):
     return False
 
 
-def fill_email_and_submit(timeout=35, log_callback=None, cancel_callback=None):
+def fill_email_and_submit(timeout=60, log_callback=None, cancel_callback=None):
     raise_if_cancelled(cancel_callback)
     email, dev_token = _deps['get_email_and_token']()
     if not email or not dev_token:
@@ -1772,10 +1780,8 @@ def _try_click_turnstile_frame(log_callback=None):
                 # 拟人贝塞尔轨迹平滑滑动至复选框
                 human_move(raw_page, px, py, speed=random.uniform(0.9, 1.25))
                 time.sleep(random.uniform(0.12, 0.25))
-                # 真实人类物理按压
-                raw_page.mouse.down(button="left")
-                time.sleep(random.uniform(0.06, 0.12))
-                raw_page.mouse.up(button="left")
+                # 真实人类物理点击派发
+                raw_page.mouse.click(px, py, delay=random.randint(55, 115))
                 if log_callback:
                     log_callback(f"[*] 拟人化点击 Turnstile 复选框 ({px:.0f}, {py:.0f})")
                 # 点击后鼠标自然微移开（模拟人类等待校验结果）

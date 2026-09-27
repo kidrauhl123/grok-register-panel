@@ -181,7 +181,7 @@ class CamoufoxElement:
 
         try:
             from human_motion import human_click_locator
-            raw_page = getattr(self._locator, "page", None)
+            raw_page = getattr(self._locator, "page", None) or getattr(self._page, "raw_page", None)
             if raw_page:
                 if human_click_locator(raw_page, self._locator, timeout=timeout):
                     return
@@ -215,7 +215,7 @@ class CamoufoxElement:
 
         try:
             from human_motion import human_type_locator
-            raw_page = getattr(self._locator, "page", None)
+            raw_page = getattr(self._locator, "page", None) or getattr(self._page, "raw_page", None)
             if raw_page:
                 if human_type_locator(raw_page, self._locator, text, clear=clear):
                     return

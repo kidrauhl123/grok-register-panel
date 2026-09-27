@@ -152,21 +152,27 @@ def human_click_locator(
         bw = box["width"]
         bh = box["height"]
 
-        target_x = bx + bw * random.uniform(0.25, 0.75)
-        target_y = by + bh * random.uniform(0.25, 0.75)
+        rel_x = bw * random.uniform(0.25, 0.75)
+        rel_y = bh * random.uniform(0.25, 0.75)
+        target_x = bx + rel_x
+        target_y = by + rel_y
 
-        # 贝塞尔移动到目标
+        # 贝塞尔平滑移动至目标点（注入高保真行为遥测轨迹）
         human_move(raw_page, target_x, target_y)
 
         # 视线对齐微停留
-        time.sleep(random.uniform(0.08, 0.22))
+        time.sleep(random.uniform(0.08, 0.20))
 
-        # 物理下压与抬起（确保 mousedown 与 mouseup 有真实间隔）
-        press_duration = delay / 1000.0 if delay else random.uniform(0.055, 0.125)
+        # 物理按压点击：使用 locator.click 并传入相对坐标与按下时长，保证 actionability 与表单事件完整性
+        press_ms = delay if delay else random.randint(55, 115)
         try:
-            raw_page.mouse.down(button="left")
-            time.sleep(press_duration)
-            raw_page.mouse.up(button="left")
+            clamped_rel_x = max(1.0, min(float(bw - 1.0), rel_x))
+            clamped_rel_y = max(1.0, min(float(bh - 1.0), rel_y))
+            locator.click(
+                timeout=int(timeout * 1000),
+                delay=press_ms,
+                position={"x": clamped_rel_x, "y": clamped_rel_y},
+            )
             time.sleep(random.uniform(0.04, 0.12))
             return True
         except Exception:
@@ -199,16 +205,21 @@ def human_type_locator(
             locator.focus(timeout=int(min(timeout, 3.0) * 1000))
         except Exception:
             pass
+    else:
+        try:
+            locator.focus(timeout=int(min(timeout, 2.0) * 1000))
+        except Exception:
+            pass
 
-    time.sleep(random.uniform(0.12, 0.28))
+    time.sleep(random.uniform(0.12, 0.25))
 
     # 若需要清空已有内容，模拟人类全选 + 删除（而非 JS 直接赋值清空）
     if clear:
         try:
             raw_page.keyboard.press("ControlOrMeta+A")
-            time.sleep(random.uniform(0.06, 0.14))
+            time.sleep(random.uniform(0.06, 0.12))
             raw_page.keyboard.press("Backspace")
-            time.sleep(random.uniform(0.08, 0.18))
+            time.sleep(random.uniform(0.06, 0.14))
         except Exception:
             try:
                 locator.fill("")
@@ -219,28 +230,27 @@ def human_type_locator(
     chars = list(str(text or ""))
     for idx, ch in enumerate(chars):
         # 基础击键延迟
-        base_delay = random.randint(45, 90)
+        base_delay = random.randint(45, 85)
 
         # 符号或特殊字符（@、.、-、_、! 等）增加视觉查找停留
         if ch in ("@", ".", "-", "_", "!", "+", "#"):
-            time.sleep(random.uniform(0.16, 0.32))
-            base_delay = random.randint(65, 110)
-        # 连续打字节奏（偶尔微停顿 120-220ms，符合真人打字思考）
+            time.sleep(random.uniform(0.14, 0.28))
+            base_delay = random.randint(60, 105)
+        # 连续打字节奏（偶尔微停顿 100-200ms，符合真人打字思考）
         elif idx > 0 and idx % random.randint(5, 8) == 0:
             if random.random() < 0.35:
-                time.sleep(random.uniform(0.12, 0.24))
+                time.sleep(random.uniform(0.10, 0.20))
 
         try:
-            raw_page.keyboard.type(ch, delay=base_delay)
+            locator.press_sequentially(ch, delay=base_delay)
         except Exception:
-            # 键盘直接输入异常时走 press_sequentially 兜底
             try:
-                locator.press_sequentially(ch, delay=base_delay)
+                raw_page.keyboard.type(ch, delay=base_delay)
             except Exception:
                 pass
 
     # 输入完成后的短暂停留（核对输入内容）
-    time.sleep(random.uniform(0.18, 0.45))
+    time.sleep(random.uniform(0.18, 0.40))
     return True
 
 
