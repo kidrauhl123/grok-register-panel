@@ -133,6 +133,9 @@ LOG_DIR = ROOT / "log"
 BATCH_TRAFFIC = LOG_DIR / "batch_traffic.json"
 BATCH_TRAFFIC_HISTORY = LOG_DIR / "batch_traffic_history.json"
 CPA_DIR = Path(os.environ.get("CPA_AUTH_DIR", str(ROOT / "cpa_auth")))
+ACCOUNTS_DIR = ROOT / "accounts"
+CONFIG_FILE = ROOT / "config.json"
+VENV_PY = runtime_python(ROOT)
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 FONT_ASSETS = {
     "/assets/geist.woff2": ASSET_DIR / "geist-latin-wght-normal.woff2",
@@ -140,6 +143,116 @@ FONT_ASSETS = {
 }
 MONITOR_TOKEN_ENV = "MONITOR_TOKEN"
 PANEL_INCLUDE_TAIL = os.environ.get("PANEL_INCLUDE_TAIL", "1").strip() in ("1", "true", "yes")
+
+_ACCOUNTS_CACHE = {"ts": 0, "data": []}
+
+
+def get_all_local_accounts() -> list[dict]:
+    """Load all local accounts from accounts/ and cpa_auth/ sorted newest first."""
+    now = time.time()
+    if now - _ACCOUNTS_CACHE["ts"] < 2.0 and _ACCOUNTS_CACHE["data"]:
+        return _ACCOUNTS_CACHE["data"]
+
+    accounts = {}
+    if ACCOUNTS_DIR.is_dir():
+        for p in ACCOUNTS_DIR.glob("*.txt"):
+            if p.name in ("mail_credentials.txt", "sso_risk_rejected.txt", "sso_bfs_flagged.txt", "sso_pending.txt"):
+                continue
+            email = p.stem.strip()
+            mtime = p.stat().st_mtime
+            accounts[email] = {
+                "email": email,
+                "mtime": mtime,
+                "time": time.strftime("%m-%d %H:%M", time.localtime(mtime)),
+                "in_acc": True,
+                "in_cpa": False,
+                "quality": "sso_only",
+            }
+
+    if CPA_DIR.is_dir():
+        for p in CPA_DIR.glob("xai-*.json"):
+            email = p.stem.replace("xai-", "").strip()
+            mtime = p.stat().st_mtime
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            verdict = data.get("quality_verdict") or ("healthy" if data.get("access_token") else "cpa_ok")
+            tps = data.get("quality_tps")
+            if email not in accounts:
+                accounts[email] = {
+                    "email": email,
+                    "mtime": mtime,
+                    "time": time.strftime("%m-%d %H:%M", time.localtime(mtime)),
+                    "in_acc": False,
+                }
+            accounts[email]["in_cpa"] = True
+            accounts[email]["quality"] = verdict
+            if tps:
+                accounts[email]["tps"] = round(float(tps), 1)
+
+    account_list = sorted(accounts.values(), key=lambda x: x["mtime"], reverse=True)
+    _ACCOUNTS_CACHE["ts"] = now
+    _ACCOUNTS_CACHE["data"] = account_list
+    return account_list
+
+
+def _auto_recovery_worker():
+    """Background daemon worker to automatically convert pending SSO and verify quality."""
+    while True:
+        try:
+            time.sleep(15)
+            pending_file = ACCOUNTS_DIR / "sso_pending.txt"
+            if not pending_file.is_file():
+                continue
+            try:
+                lines = [
+                    l.strip()
+                    for l in pending_file.read_text(encoding="utf-8").splitlines()
+                    if l.strip() and not l.strip().startswith("#")
+                ]
+            except Exception:
+                continue
+            if not lines:
+                continue
+
+            # Check if any sso_to_auth_json job is already running
+            jobs = _find_managed_processes(("sso_to_auth_json.py",))
+            if jobs:
+                continue
+
+            log_path = LOG_DIR / "auto_recovery.log"
+            ensure_private_dir(LOG_DIR)
+            fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            best_effort_fchmod(fd, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fout:
+                fout.write(
+                    f"\n--- [AutoRecovery] 检测到 {len(lines)} 个待补录账号，启动自动换Token与降智测试: "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+                )
+                fout.flush()
+                cmd = [
+                    str(VENV_PY),
+                    "-u",
+                    str(ROOT / "sso_to_auth_json.py"),
+                    "--from-config",
+                    str(CONFIG_FILE),
+                    "--sso",
+                    str(pending_file),
+                    "--quality-probe",
+                    "--consume-success",
+                ]
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(ROOT),
+                    stdout=fout,
+                    stderr=subprocess.STDOUT,
+                    env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                    **popen_group_kwargs(),
+                )
+                proc.wait()
+        except Exception:
+            pass
 
 
 def _configured_process_roots(
@@ -964,6 +1077,7 @@ def snapshot():
             eta = f"{int(eta_min)}m" if eta_min < 120 else f"{eta_min/60:.1f}h"
     workers_show = parsed.get("workers") or control.get("workers")
     traffic = read_batch_traffic(BATCH_TRAFFIC)
+    traffic_summary = read_batch_traffic_summary(BATCH_TRAFFIC_HISTORY, current=traffic)
     if traffic.get("running") and not proc.get("running"):
         traffic["running"] = False
     if int(traffic.get("version") or 0) < 2:
@@ -971,7 +1085,7 @@ def snapshot():
             int(traffic.get("successful_accounts") or 0),
             int(parsed.get("ok") or 0),
         )
-    traffic_summary = read_batch_traffic_summary(BATCH_TRAFFIC_HISTORY, traffic)
+    local_accs = get_all_local_accounts()
     return {
         "ts": time.time(),
         "ts_human": beijing_strftime("%Y-%m-%d %H:%M:%S"),
@@ -987,6 +1101,8 @@ def snapshot():
         "success_rate": round(100.0 * ok / done, 1) if done else None,
         "rate_per_min": rate_per_min,
         "eta": eta,
+        "accounts": local_accs,
+        "accounts_total": len(local_accs),
         "traffic": traffic,
         "traffic_summary": traffic_summary,
         "blacklist": {
@@ -1340,12 +1456,31 @@ HTML = r"""<!DOCTYPE html>
   button.theme-option[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
   .metric-grid {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1px;
     overflow: hidden;
     border: 1px solid var(--border);
     border-radius: 0;
     background: var(--border);
+  }
+  .filter-group { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tab-btn {
+    padding: 3px 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    background: var(--surface-soft);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .tab-btn:hover { background: var(--button-hover); color: var(--text); }
+  .tab-btn.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  .badge-tag {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 2px;
+    font-size: 11px;
+    font-weight: 600;
   }
   #kpis { margin-top: 10px; }
   .metric {
@@ -2119,7 +2254,7 @@ HTML = r"""<!DOCTYPE html>
       <button type="button" class="view-switch" id="proxy-view-toggle" aria-label="打开代理池" title="代理池" aria-controls="proxy-view" aria-expanded="false" data-active="false" onclick="toggleProxyView()">
         <span id="proxy-view-label" aria-hidden="true">代理池</span>
       </button>
-      <button type="button" class="view-switch" id="quality-view-toggle" aria-label="打开降智测试" title="降智测试" aria-controls="quality-view" aria-expanded="false" data-active="false" onclick="toggleQualityView()">
+      <button type="button" class="view-switch" id="quality-view-toggle" style="display:none;" aria-label="打开降智测试" title="降智测试" aria-controls="quality-view" aria-expanded="false" data-active="false" onclick="toggleQualityView()">
         <span id="quality-view-label" aria-hidden="true">降智测试</span>
       </button>
       <button type="button" class="view-switch" id="sso-view-toggle" style="display:none;" aria-label="打开 SSO 风控（已停用）" title="SSO 风控（已停用）" aria-controls="sso-view" aria-expanded="false" data-active="false" onclick="toggleSsoView()">
@@ -2619,14 +2754,6 @@ HTML = r"""<!DOCTYPE html>
 
   <section class="metric-grid panel-gap" id="kpis" aria-label="核心指标"></section>
 
-  <section class="card panel rate-panel">
-    <div class="section-head">
-      <h2>时段成功率</h2>
-      <span class="section-meta mono" id="rates-updated">register_results.jsonl</span>
-    </div>
-    <div class="rate-grid" id="rate-kpis"></div>
-  </section>
-
   <section class="card panel">
     <div class="progress-head">
       <h2>当前批次</h2>
@@ -2636,150 +2763,68 @@ HTML = r"""<!DOCTYPE html>
     <div class="progress-sub" id="prog-sub"></div>
   </section>
 
-  <section class="card panel recovery-panel" aria-labelledby="recovery-title">
+  <section class="card panel" id="accounts-panel">
     <div class="section-head">
-      <h2 id="recovery-title">账号补录</h2>
-      <span class="section-meta mono" id="recovery-status">等待检查</span>
-    </div>
-    <div class="recovery-layout">
-      <div class="chips" id="recovery-kpis"></div>
-      <div class="button-group recovery-actions">
-        <button id="recovery-pending" onclick="startRecovery('pending')">补录待处理</button>
-        <button id="recovery-accounts" onclick="startRecovery('accounts')">扫描全部账号</button>
-        <button class="danger" id="recovery-stop" onclick="stopRecovery()">停止补录</button>
+      <div>
+        <h2 style="display:inline-block;margin-right:12px">本地账号列表</h2>
+        <span class="section-meta" id="acc-page-meta">加载中...</span>
+      </div>
+      <div class="button-group">
+        <div class="filter-group" role="group" aria-label="账号状态筛选">
+          <button type="button" class="tab-btn active" id="acc-btn-all" onclick="setAccFilter('all')">全部</button>
+          <button type="button" class="tab-btn" id="acc-btn-healthy" onclick="setAccFilter('healthy')">✅ 正常</button>
+          <button type="button" class="tab-btn" id="acc-btn-hard" onclick="setAccFilter('hard')">❌ 降智</button>
+          <button type="button" class="tab-btn" id="acc-btn-sso" onclick="setAccFilter('sso')">⚠️ 仅SSO</button>
+        </div>
+        <input type="search" id="acc-search" placeholder="搜索邮箱..." style="padding:4px 9px;font-size:12px;width:150px;border:1px solid var(--border);border-radius:2px;background:var(--surface-soft);color:var(--text)" oninput="onAccSearch(this.value)" />
+        <button onclick="refresh()">刷新</button>
       </div>
     </div>
-    <div class="msg" id="recovery-msg" role="status" aria-live="polite"></div>
-  </section>
-
-  <section class="card panel" aria-labelledby="quality-dash-title">
-    <div class="section-head">
-      <h2 id="quality-dash-title">降智测试</h2>
-      <span class="section-meta mono" id="quality-dash-status">家宽实聊</span>
-    </div>
-    <p style="margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.5">
-      入库短测默认关，打开开关才测。面板用于复测存量号：短题、见到 thinking 即停；有 thinking 为正常，没有为降智；401/403 记为风控。
-    </p>
-    <div class="chips" id="quality-dash-kpis"></div>
-    <div class="button-group" style="margin-top:10px">
-      <button class="primary" onclick="toggleQualityView()">打开测试面板</button>
-      <button onclick="refreshQuality()">刷新</button>
-    </div>
-  </section>
-
-  <section class="card panel" aria-labelledby="sso-dash-title" style="display:none;">
-    <div class="section-head">
-      <h2 id="sso-dash-title">SSO 风控（已停用）</h2>
-      <span class="section-meta mono" id="sso-dash-status">不再判定</span>
-    </div>
-    <p style="margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.5">
-      grok.com <code>botFlagSource</code> / <code>policy=deny</code> 已不能判断风控，注册也不会再据此拦截。仅保留对照扫描。
-    </p>
-    <div class="chips" id="sso-dash-kpis"></div>
-    <div class="button-group" style="margin-top:10px">
-      <button onclick="toggleSsoView()">打开旧面板</button>
-      <button onclick="refreshSsoState()">刷新</button>
-    </div>
-  </section>
-
-  <section class="card panel" aria-labelledby="bfs-title">
-    <div class="section-head">
-      <h2 id="bfs-title">BFS 检测</h2>
-      <span class="section-meta mono" id="bfs-status">JWT claim</span>
-    </div>
-    <p style="margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.5">
-      解码 CPA / Grok2API auth 中的 access_token，检查是否含 <code>bfs</code> claim（与 botFlagSource 独立）。
-      注册换 token 后会自动检测并写入 <code>accounts/sso_bfs_flagged.txt</code>。
-    </p>
-    <div class="chips" id="bfs-kpis"></div>
-    <div class="button-group" style="margin-top:10px">
-      <button id="bfs-scan" onclick="runBfsScan()">扫描 auth 目录</button>
-      <button onclick="refreshBfs()">刷新状态</button>
-    </div>
-    <div class="msg" id="bfs-msg" role="status" aria-live="polite"></div>
-    <div class="table-scroll" style="margin-top:10px;max-height:220px">
+    <div class="table-scroll" style="max-height:480px">
       <table>
-        <thead><tr><th>邮箱</th><th>bfs</th><th>来源</th><th>文件</th></tr></thead>
-        <tbody id="bfs-body"></tbody>
+        <thead>
+          <tr>
+            <th style="width:110px">时间</th>
+            <th>邮箱</th>
+            <th style="width:160px">降智检测</th>
+            <th style="width:150px">Premsir 同步</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-body"></tbody>
       </table>
     </div>
+    <div class="list-pager" id="acc-pager" style="margin-top:12px">
+      <span class="pager-info" id="acc-pager-info"></span>
+      <div class="pager-btns">
+        <button type="button" id="acc-first" onclick="goAccPage(1)">首页</button>
+        <button type="button" id="acc-prev" onclick="goAccPage(accPage - 1)">上一页</button>
+        <button type="button" id="acc-next" onclick="goAccPage(accPage + 1)">下一页</button>
+        <button type="button" id="acc-last" onclick="goAccPage(999999)">末页</button>
+      </div>
+    </div>
   </section>
 
-  <div class="three panel-gap">
-    <div class="card">
-      <div class="section-head">
-        <h2>成功统计</h2>
-        <button onclick="refreshStats()">刷新</button>
-      </div>
-      <div class="chips" id="stats-chips"></div>
-      <div class="msg" id="stats-msg" role="status" aria-live="polite"></div>
-      <div class="table-scroll">
-        <table><thead><tr><th>日期</th><th>成功</th><th>风控</th><th>失败</th></tr></thead>
-        <tbody id="stats-day"></tbody></table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="section-head">
-        <h2>黑名单</h2>
-        <div class="button-group">
-          <button onclick="refreshBlacklist()">刷新</button>
-          <button class="danger" onclick="resetBlacklist('baseline')">重置</button>
-        </div>
-      </div>
-      <div class="chips" id="bl-kpis"></div>
-      <div class="msg" id="bl-msg" role="status" aria-live="polite"></div>
-      <div class="bl-list" style="margin-top:10px">
-        <table><thead><tr><th>ASN</th><th>备注</th></tr></thead><tbody id="bl-body"></tbody></table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="section-head"><h2>黑名单更新记录</h2></div>
-      <div class="chips" id="bl-err-chips"></div>
-      <div class="table-scroll">
-        <table><thead><tr><th>新增 ASN</th><th>来源</th></tr></thead>
-        <tbody id="bl-added"></tbody></table>
-      </div>
-    </div>
-  </div>
-
-  <div class="two panel-gap">
-    <div class="card"><h2>Worker 成功 / 失败</h2><div class="chips" id="workers-stats"></div></div>
-    <div class="card"><h2>失败分类</h2><div class="chips" id="fails"></div></div>
-  </div>
-  <div class="two panel-gap">
-    <div class="card">
-      <div class="section-head">
-        <h2>最近成功</h2>
-        <span class="section-meta" id="ok-page-meta"></span>
-      </div>
-      <div class="table-scroll"><table><thead><tr><th>时间</th><th>W</th><th>邮箱</th><th>降智检测</th></tr></thead><tbody id="ok-body"></tbody></table></div>
-      <div class="list-pager" id="ok-pager">
-        <span class="pager-info" id="ok-pager-info"></span>
-        <div class="pager-btns">
-          <button type="button" id="ok-prev" aria-label="上一页">上一页</button>
-          <button type="button" id="ok-next" aria-label="下一页">下一页</button>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="section-head">
-        <h2>最近失败</h2>
-        <span class="section-meta" id="fail-page-meta"></span>
-      </div>
-      <div class="table-scroll"><table><thead><tr><th>时间</th><th>W</th><th>类型</th><th>摘要</th></tr></thead><tbody id="fail-body"></tbody></table></div>
-      <div class="list-pager" id="fail-pager">
-        <span class="pager-info" id="fail-pager-info"></span>
-        <div class="pager-btns">
-          <button type="button" id="fail-prev" aria-label="上一页">上一页</button>
-          <button type="button" id="fail-next" aria-label="下一页">下一页</button>
-        </div>
-      </div>
-    </div>
-  </div>
   <section class="card panel">
-    <div class="section-head"><h2>日志尾部</h2></div>
-    <div class="tail mono" id="tail"></div>
+    <div class="section-head">
+      <h2>运行日志</h2>
+      <span class="section-meta mono" id="log-meta">实时刷新</span>
+    </div>
+    <div class="tail mono" id="tail" style="max-height:360px"></div>
   </section>
+
+  <!-- 兼容保留的静默隐藏容器，确保旧脚本引用不报错 -->
+  <div id="hidden-legacy-views" style="display:none;" aria-hidden="true">
+    <section class="card panel rate-panel"><div id="rate-kpis"></div><span id="rates-updated"></span></section>
+    <section class="recovery-panel"><div id="recovery-kpis"></div><div id="recovery-msg"></div><span id="recovery-status"></span></section>
+    <section id="quality-dash-card"><div id="quality-dash-kpis"></div><span id="quality-dash-status"></span></section>
+    <section id="sso-dash-card"><div id="sso-dash-kpis"></div><span id="sso-dash-status"></span></section>
+    <section id="bfs-card"><div id="bfs-kpis"></div><div id="bfs-msg"></div><tbody id="bfs-body"></tbody><span id="bfs-status"></span></section>
+    <div id="stats-chips"></div><div id="stats-msg"></div><tbody id="stats-day"></tbody>
+    <div id="bl-kpis"></div><div id="bl-msg"></div><tbody id="bl-body"></tbody><div id="bl-err-chips"></div><tbody id="bl-added"></tbody>
+    <div id="workers-stats"></div><div id="fails"></div>
+    <span id="ok-page-meta"></span><tbody id="ok-body"></tbody><div id="ok-pager"></div><span id="ok-pager-info"></span><button id="ok-prev"></button><button id="ok-next"></button>
+    <span id="fail-page-meta"></span><tbody id="fail-body"></tbody><div id="fail-pager"></div><span id="fail-pager-info"></span><button id="fail-prev"></button><button id="fail-next"></button>
+  </div>
   <footer id="footer"></footer>
 </main>
 <script>
@@ -2797,6 +2842,11 @@ let okPage = 1;
 let failPage = 1;
 let okRowsCache = [];
 let failRowsCache = [];
+let allAccountsCache = [];
+let accPage = 1;
+const ACC_PAGE_SIZE = 10;
+let accFilter = "all";
+let accSearchQuery = "";
 // 完整成功统计（jsonl / by_day）；2s 轮询只更新本批数字，不能冲掉
 let lastFullStats = null;
 let ssoSource = "paste";
@@ -4053,16 +4103,10 @@ function render(d) {
     ? "累计成功 " + trafficSuccessCount + " / 含失败流量"
     : "等待成功账号样本";
   const kpis = [
+    ["总有效账号 (CPA)", d.cpa ?? "--", "accent", "较基线 " + (d.cpa_delta != null ? ((Number(d.cpa_delta) >= 0 ? "+" : "") + d.cpa_delta) : "--")],
     ["本批成功", d.ok ?? 0, "ok", "目标 " + (d.target ?? "--")],
-    ["本批失败", d.fail ?? 0, "fail", d.success_rate != null ? "成功率 " + d.success_rate + "%" : "暂无数据"],
-    ["CPA 总量", d.cpa ?? "--", "accent", "较基线 " + (d.cpa_delta != null ? ((Number(d.cpa_delta) >= 0 ? "+" : "") + d.cpa_delta) : "--")],
-    ["正常 / 风控", (d.bot0 ?? 0) + " / " + (d.bot1 ?? 0), (d.bot1 ?? 0) > 0 ? "warn" : "ok", "注册结果采样"],
-    ["BFS 标记", d.bfs ?? 0, (d.bfs ?? 0) > 0 ? "warn" : "ok", "JWT claim 命中"],
-    ["黑名单 ASN", (d.blacklist && d.blacklist.count) ?? "--", "accent", "更新错误 " + ((d.blacklist_update && d.blacklist_update.error_count) ?? 0)],
-    ["本批代理流量", hasTrafficBatch ? formatBytes(trafficTotal) : "--", "accent", trafficSub],
-    ["预计完成", d.ended ? "已完成" : (d.eta || "--"), "", "并发 " + (d.workers ?? "--") + (d.rate_per_min != null ? " / " + d.rate_per_min + " 每分钟" : "")],
-    ["每批平均流量", trafficSummary.bytes_per_batch != null ? formatBytes(trafficSummary.bytes_per_batch) : "--", "accent", trafficAverageSub],
-    ["每个成功号平均流量", trafficSummary.bytes_per_success != null ? formatBytes(trafficSummary.bytes_per_success) : "--", "ok", trafficSuccessSub],
+    ["本批失败", d.fail ?? 0, "fail", d.success_rate != null ? "成功率 " + d.success_rate + "%" : "暂无失败"],
+    ["任务状态", on ? "运行中" : "已停止", on ? "ok" : "", "并发 " + (d.workers ?? "--") + (d.eta ? " · 预计 " + d.eta : "")],
   ];
   document.getElementById("kpis").innerHTML = kpis.map(([label, val, cls, sub]) =>
     `<div class="metric"><div class="label">${esc(label)}</div><div class="value ${cls}">${esc(val)}</div><div class="sub">${esc(sub)}</div></div>`
@@ -4091,18 +4135,23 @@ function render(d) {
 
   const wset = new Set([...(Object.keys(d.worker_ok || {})), ...(Object.keys(d.worker_fail || {}))]);
   const ws = [...wset].sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
-  document.getElementById("workers-stats").innerHTML = ws.length ? ws.map(w =>
+  const wsEl = document.getElementById("workers-stats");
+  if (wsEl) wsEl.innerHTML = ws.length ? ws.map(w =>
     `<div class="chip"><span>${esc(w)}</span><b><span class="ok">${d.worker_ok && d.worker_ok[w] || 0}</span> <span style="color:var(--muted)">/</span> <span class="fail">${d.worker_fail && d.worker_fail[w] || 0}</span></b></div>`
   ).join("") : '<span style="color:var(--muted)">暂无</span>';
   const fk = Object.entries(d.fail_kinds || {}).sort((a, b) => b[1] - a[1]);
-  document.getElementById("fails").innerHTML = fk.length ? fk.map(([k, v]) =>
+  const fkEl = document.getElementById("fails");
+  if (fkEl) fkEl.innerHTML = fk.length ? fk.map(([k, v]) =>
     `<div class="chip"><span>${esc(k)}</span><b class="fail">${v}</b></div>`
   ).join("") : '<span style="color:var(--muted)">暂无失败</span>';
   okRowsCache = Array.isArray(d.recent_ok) ? d.recent_ok.slice() : [];
   failRowsCache = Array.isArray(d.recent_fail) ? d.recent_fail.slice() : [];
-  // 新数据到来时，若当前页越界则收回最后一页；用户正在翻页时尽量保留页码
   renderOkPage();
   renderFailPage();
+  if (Array.isArray(d.accounts)) {
+    allAccountsCache = d.accounts;
+    renderAccountsPage();
+  }
   document.getElementById("tail").textContent = (d.tail || []).join("\n");
   document.getElementById("footer").textContent =
     "服务 " + location.host + " / 日志 " + (d.log || "") + " / 2 秒轮询 / "
@@ -4194,6 +4243,115 @@ document.getElementById("fail-next").addEventListener("click", () => {
   failPage += 1;
   renderFailPage();
 });
+
+function renderAccQuality(q, tps) {
+  if (!q || q === "-") return '<span style="color:var(--muted)">-</span>';
+  const lq = String(q).toLowerCase();
+  const tpsStr = tps ? ` <span style="font-size:11px;opacity:0.8">(${tps} tps)</span>` : "";
+  if (lq === "healthy") return `<span style="color:#2ea043;font-weight:600">✅ healthy${tpsStr}</span>`;
+  if (lq === "hard") return `<span style="color:#f85149;font-weight:600">❌ 降智(hard)${tpsStr}</span>`;
+  if (lq === "burst") return `<span style="color:#f85149;font-weight:600">❌ 降智(burst)</span>`;
+  if (lq === "soft") return `<span style="color:#d29922;font-weight:600">⚠️ 降智(soft)${tpsStr}</span>`;
+  if (lq === "risk") return '<span style="color:#f85149;font-weight:600">⛔ 风控</span>';
+  if (lq === "sso_only" || lq.includes("sso")) return '<span style="color:#d29922;font-weight:600">⚠️ 仅SSO</span>';
+  if (lq === "cpa_ok") return '<span style="color:#2ea043;font-weight:600">✅ 已入库</span>';
+  return `<span style="color:var(--text);font-weight:600">${esc(q)}</span>`;
+}
+
+function renderAccPremsir(r) {
+  const lq = String(r.quality || "").toLowerCase();
+  if (lq === "healthy") return '<span style="color:#2ea043;font-weight:600">✅ 已同步</span>';
+  if (lq === "hard" || lq === "burst") return '<span style="color:#f85149;font-size:12px">⛔ 降智拦截</span>';
+  if (lq === "soft") return '<span style="color:#d29922;font-size:12px">⚠️ 降智未推</span>';
+  if (lq === "sso_only" || !r.in_cpa) return '<span style="color:#d29922;font-size:12px">⏳ 待自动换Token</span>';
+  if (lq === "cpa_ok") return '<span style="color:#2ea043;font-size:12px">✅ 本地有效</span>';
+  return '<span style="color:var(--muted);font-size:12px">--</span>';
+}
+
+function setAccFilter(filter) {
+  accFilter = filter;
+  ["all", "healthy", "hard", "sso"].forEach(f => {
+    const el = document.getElementById("acc-btn-" + f);
+    if (el) el.classList.toggle("active", f === filter);
+  });
+  accPage = 1;
+  renderAccountsPage();
+}
+
+function onAccSearch(val) {
+  accSearchQuery = (val || "").trim().toLowerCase();
+  accPage = 1;
+  renderAccountsPage();
+}
+
+function goAccPage(p) {
+  accPage = p;
+  renderAccountsPage();
+}
+
+function renderAccountsPage() {
+  const list = allAccountsCache || [];
+  let filtered = list;
+  if (accFilter === "healthy") {
+    filtered = filtered.filter(x => {
+      const q = String(x.quality || "").toLowerCase();
+      return q === "healthy" || q === "cpa_ok";
+    });
+  } else if (accFilter === "hard") {
+    filtered = filtered.filter(x => {
+      const q = String(x.quality || "").toLowerCase();
+      return q === "hard" || q === "burst" || q === "soft";
+    });
+  } else if (accFilter === "sso") {
+    filtered = filtered.filter(x => {
+      const q = String(x.quality || "").toLowerCase();
+      return q === "sso_only" || !x.in_cpa;
+    });
+  }
+
+  if (accSearchQuery) {
+    filtered = filtered.filter(x => (x.email || "").toLowerCase().includes(accSearchQuery));
+  }
+
+  const pages = Math.max(1, Math.ceil(filtered.length / ACC_PAGE_SIZE));
+  if (accPage < 1) accPage = 1;
+  if (accPage > pages) accPage = pages;
+
+  const start = (accPage - 1) * ACC_PAGE_SIZE;
+  const slice = filtered.slice(start, start + ACC_PAGE_SIZE);
+
+  const tbody = document.getElementById("accounts-body");
+  if (tbody) {
+    tbody.innerHTML = slice.length
+      ? slice.map(r =>
+          `<tr><td class="mono" style="font-size:12px;color:var(--muted)">${esc(r.time || "")}</td><td class="mono" style="font-weight:500">${esc(r.email)}</td><td>${renderAccQuality(r.quality, r.tps)}</td><td>${renderAccPremsir(r)}</td></tr>`
+        ).join("")
+      : '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:24px">未找到匹配账号</td></tr>';
+  }
+
+  const metaEl = document.getElementById("acc-page-meta");
+  if (metaEl) {
+    if (filtered.length === list.length) {
+      metaEl.textContent = `共 ${list.length} 个账号 · 第 ${accPage}/${pages} 页`;
+    } else {
+      metaEl.textContent = `筛选 ${filtered.length} / 共 ${list.length} 个账号 · 第 ${accPage}/${pages} 页`;
+    }
+  }
+
+  const infoEl = document.getElementById("acc-pager-info");
+  if (infoEl) {
+    infoEl.textContent = `每页 ${ACC_PAGE_SIZE} 条`;
+  }
+
+  const firstBtn = document.getElementById("acc-first");
+  const prevBtn = document.getElementById("acc-prev");
+  const nextBtn = document.getElementById("acc-next");
+  const lastBtn = document.getElementById("acc-last");
+  if (firstBtn) firstBtn.disabled = accPage <= 1 || !filtered.length;
+  if (prevBtn) prevBtn.disabled = accPage <= 1 || !filtered.length;
+  if (nextBtn) nextBtn.disabled = accPage >= pages || !filtered.length;
+  if (lastBtn) lastBtn.disabled = accPage >= pages || !filtered.length;
+}
 
 syncThemeButtons();
 initHelp();
@@ -4712,6 +4870,7 @@ def main():
             flush=True,
         )
     print(f"[monitor] http://{host}:{BIND_PORT}/  (bound {host}:{BIND_PORT})", flush=True)
+    threading.Thread(target=_auto_recovery_worker, daemon=True, name="AutoRecoveryWorker").start()
     httpd.serve_forever()
 
 
