@@ -465,12 +465,31 @@ def discover_log():
     return cands[0] if cands else None
 
 
-def read_base():
-    """Prefer control.base_cpa; fall back to batch1000.base file if present."""
+def read_base() -> int:
+    """Prefer control.base_healthy_cpa, then control.base_cpa; fall back to batch1000.base file if present."""
     try:
         c = load_control()
+        if c.get("base_healthy_cpa") is not None and str(c.get("base_healthy_cpa")).strip() != "":
+            return int(c["base_healthy_cpa"])
         if c.get("base_cpa") is not None and str(c.get("base_cpa")).strip() != "":
-            return int(c["base_cpa"])
+            val = int(c["base_cpa"])
+            healthy = healthy_cpa_count()
+            if val > healthy:
+                proc = process_running()
+                if proc.get("running"):
+                    log = discover_log()
+                    parsed = parse_log(log) if log else {}
+                    ok = parsed.get("ok") or 0
+                    calc_base = max(0, healthy - ok)
+                    c["base_healthy_cpa"] = calc_base
+                    c["base_cpa"] = calc_base
+                    save_control(c)
+                    return calc_base
+                c["base_healthy_cpa"] = healthy
+                c["base_cpa"] = healthy
+                save_control(c)
+                return healthy
+            return val
     except Exception:
         pass
     try:
@@ -1425,7 +1444,7 @@ HTML = r"""<!DOCTYPE html>
   .list-pager button:disabled { opacity: .4; cursor: not-allowed; }
   .control-grid {
     display: grid;
-    grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 0.9fr) repeat(3, minmax(90px, 0.65fr)) auto;
+    grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(90px, 0.7fr)) auto;
     gap: 12px;
     align-items: end;
   }
@@ -1584,10 +1603,12 @@ HTML = r"""<!DOCTYPE html>
   .rate-total { color: var(--muted); font-size: 11px; white-space: nowrap; }
   .rate-value { margin-top: 4px; font-size: 23px; line-height: 1; font-weight: 730; font-variant-numeric: tabular-nums; }
   .rate-breakdown { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: var(--muted); font-size: 11px; }
-  .progress-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
-  .bar-wrap { height: 8px; overflow: hidden; border-radius: 1px; background: var(--progress-track); }
+  .progress-panel { padding: 12px 16px 14px; margin-top: 10px; }
+  .progress-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+  .progress-head h2 { font-size: 14px; font-weight: 700; margin: 0; }
+  .bar-wrap { height: 7px; overflow: hidden; border-radius: 1px; background: var(--progress-track); }
   .bar { height: 100%; width: 0%; background: var(--accent); transition: width 420ms cubic-bezier(.16, 1, .3, 1), background-color 180ms ease; }
-  .progress-sub { margin-top: 9px; color: var(--muted); font-size: 12px; }
+  .progress-sub { margin-top: 7px; color: var(--muted); font-size: 12px; }
   .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
   .three { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, .95fr); gap: 14px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -2340,12 +2361,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </header>
 <main id="dashboard-view" aria-label="注册控制台">
-  <div class="page-heading">
-    <div>
-      <div class="page-title">注册控制台</div>
-      <div class="brand-subtitle mono" id="logname">--</div>
-    </div>
-  </div>
+  <span id="logname" style="display:none"></span>
   <section class="card control-panel">
     <div class="section-head">
       <h2>任务控制</h2>
@@ -2356,13 +2372,7 @@ HTML = r"""<!DOCTYPE html>
         <label for="monitor-token">访问令牌</label>
         <input id="monitor-token" type="password" autocomplete="off" placeholder="MONITOR_TOKEN" onchange="getToken(); refresh(); refreshRecovery(); refreshProxies(); refreshEmailProvider(); refreshEmailDomains(); refreshSsoState(); refreshQuality(); refreshBfs()" onblur="getToken()"/>
       </div>
-      <div class="field field-mode">
-        <label for="mode">运行模式</label>
-        <select id="mode" onchange="markControlModified()">
-          <option value="orch">持续编排</option>
-          <option value="batch">单批运行</option>
-        </select>
-      </div>
+      <input type="hidden" id="mode" value="orch"/>
       <div class="field"><label for="workers-input">并发数</label>
         <input type="number" id="workers-input" min="1" max="24" value="1" oninput="markControlModified()"/>
       </div>
@@ -2815,11 +2825,9 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </section>
 
-  <section class="metric-grid panel-gap" id="kpis" aria-label="核心指标"></section>
-
-  <section class="card panel">
+  <section class="card panel progress-panel">
     <div class="progress-head">
-      <h2 id="prog-title">任务进度</h2>
+      <h2 id="prog-title">进度</h2>
       <div class="mono" id="prog-text">--</div>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar"></div></div>
@@ -4195,18 +4203,51 @@ function renderStats(s, opts) {
     }
   }
 }
+function formatEtime(etime) {
+  if (!etime) return "";
+  let str = String(etime).trim();
+  let days = 0, hours = 0, mins = 0, secs = 0;
+  if (str.includes("-")) {
+    const parts = str.split("-");
+    days = parseInt(parts[0], 10) || 0;
+    str = parts[1] || "";
+  }
+  const parts = str.split(":").map(p => parseInt(p, 10) || 0);
+  if (parts.length === 3) {
+    hours = parts[0];
+    mins = parts[1];
+    secs = parts[2];
+  } else if (parts.length === 2) {
+    mins = parts[0];
+    secs = parts[1];
+  } else if (parts.length === 1) {
+    secs = parts[0];
+  }
+  let res = "";
+  if (days > 0) res += days + "d";
+  if (hours > 0) res += hours + "h";
+  if (mins > 0) res += mins + "m";
+  res += secs + "s";
+  return res || "0s";
+}
+
 function render(d) {
   document.getElementById("clock").textContent = d.ts_human || "--";
-  document.getElementById("logname").textContent =
-    (d.log_name || d.log || "--") + (d.process && d.process.etime ? " / 用时 " + d.process.etime : "");
+  const logEl = document.getElementById("logname");
+  if (logEl) {
+    logEl.textContent =
+      (d.log_name || d.log || "--") + (d.process && d.process.etime ? " / 用时 " + d.process.etime : "");
+  }
   const on = !!(d.process && d.process.running);
   document.getElementById("run-dot").className = "dot " + (on ? "on" : (d.ended ? "done" : "off"));
+  const etimeFormatted = d.process && d.process.etime ? formatEtime(d.process.etime) : "";
   let runLabel = "已停止";
   if (d.process && d.process.orch_running) runLabel = "编排运行 #" + d.process.orch_pid;
   else if (d.process && d.process.batch_running) runLabel = "单批运行 #" + d.process.batch_pid;
   else if (d.ended) runLabel = "已完成";
-  if (on && (d.workers || d.eta)) {
-    runLabel += " · 并发 " + (d.workers || "--");
+  if (on) {
+    if (etimeFormatted) runLabel += " · 用时 " + etimeFormatted;
+    if (d.workers) runLabel += " · 并发 " + d.workers;
     if (d.eta) runLabel += " · 预计 " + d.eta;
   }
   document.getElementById("run-label").textContent = runLabel;
@@ -4219,6 +4260,7 @@ function render(d) {
   isTaskRunning = on;
   let ctrlStatusText = on ? "运行中" : "空闲";
   if (on) {
+    if (etimeFormatted) ctrlStatusText += " · 用时 " + etimeFormatted;
     if (d.workers) ctrlStatusText += " · 并发 " + d.workers;
     if (d.eta) ctrlStatusText += " · 预计剩余 " + d.eta;
   }
@@ -4255,64 +4297,34 @@ function render(d) {
     ? "累计成功 " + trafficSuccessCount + " / 含失败流量"
     : "等待成功账号样本";
 
-  const isOrch = (d.control && d.control.mode) === "orch";
+  const isOrch = (d.control && d.control.mode) !== "batch";
   const goalAdded = d.goal_added != null ? d.goal_added : (isOrch ? (d.cpa_delta || 0) : (d.ok || 0));
-  const goalTarget = d.goal_target != null ? d.goal_target : (d.control && (d.control.add_count || d.control.batch_count) || d.target || 40);
+  const goalTarget = d.goal_target != null ? d.goal_target : (d.control && (d.control.add_count || d.control.batch_count) || 200);
   const goalPct = goalTarget > 0 ? Math.min(100, Math.round((goalAdded / goalTarget) * 1000) / 10) : 0;
 
-  const kpis = [
-    [
-      "有效账号 (Healthy)",
-      d.cpa ?? "--",
-      "accent",
-      "较启动基线 " + (d.cpa_delta != null ? ((Number(d.cpa_delta) >= 0 ? "+" : "") + d.cpa_delta) : "--") + " · grok2api 同步"
-    ],
-    [
-      "降智拦截 (Hard)",
-      d.cpa_degraded ?? 0,
-      (Number(d.cpa_degraded) > 0 ? "fail" : "ok"),
-      "已自动隔离 · 阻止推向远端"
-    ],
-    [
-      isOrch ? "本次追加目标" : "本批目标进度",
-      goalAdded + " / " + goalTarget,
-      "ok",
-      "Healthy 达标率 " + goalPct + "%" + (d.eta ? " · 预计 " + d.eta : "")
-    ],
-  ];
-  document.getElementById("kpis").innerHTML = kpis.map(([label, val, cls, sub]) =>
-    `<div class="metric"><div class="label">${esc(label)}</div><div class="value ${cls}">${esc(val)}</div><div class="sub">${esc(sub)}</div></div>`
-  ).join("");
   renderRates(d.rates || {});
   const ru = document.getElementById("rates-updated");
   if (ru && d.ts_human) ru.textContent = "数据更新 " + d.ts_human;
 
-  const pct = Math.min(100, Number(d.progress_pct) || 0);
-  const progPct = isOrch ? goalPct : pct;
-  document.getElementById("bar").style.width = progPct + "%";
+  const progPct = goalPct;
+  const barEl = document.getElementById("bar");
+  if (barEl) barEl.style.width = progPct + "%";
   const pTitle = document.getElementById("prog-title");
   if (pTitle) {
-    pTitle.textContent = isOrch ? "本次追加目标进度 (Healthy)" : "当前批次进度";
+    pTitle.textContent = "进度";
   }
-  document.getElementById("prog-text").textContent =
-    (isOrch ? (goalAdded + " / " + goalTarget) : ((d.ok ?? 0) + " / " + (d.target ?? 0))) + " (" + progPct + "%)";
+  const progTextEl = document.getElementById("prog-text");
+  if (progTextEl) {
+    progTextEl.textContent = goalAdded + " / " + goalTarget + " (" + progPct + "%)";
+  }
 
-  const batchOk = d.ok ?? 0;
-  const batchFail = d.fail ?? 0;
-  const batchDone = d.done_attempts ?? (batchOk + batchFail);
-  const batchTarget = d.target ?? "--";
-  const batchRate = d.success_rate != null ? d.success_rate + "%" : "--";
-  
-  let subText = `本批状态: 成功 ${batchOk} (目标 ${batchTarget}) · 失败 ${batchFail} · 成功率 ${batchRate} · 尝试 ${batchDone}`;
-  if (on) {
-    subText += " · 进程运行中";
-  } else {
-    subText += " · 任务已停止";
+  const attempts = d.done_attempts ?? ((d.ok || 0) + (d.fail || 0));
+  const fails = d.fail ?? 0;
+  const rate = d.success_rate != null ? d.success_rate + "%" : "100%";
+  const progSubEl = document.getElementById("prog-sub");
+  if (progSubEl) {
+    progSubEl.textContent = `尝试 ${attempts} 次 · 失败 ${fails} 次 · 成功率 ${rate}`;
   }
-  if (d.ended) {
-    subText += ` · 上批结束: 成功 ${d.ended.success}，失败 ${d.ended.fail}`;
-  }
-  document.getElementById("prog-sub").textContent = subText;
 
   if (Array.isArray(d.accounts)) {
     allAccountsCache = d.accounts;
