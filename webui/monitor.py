@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 import ipaddress
 import os
 import re
@@ -1163,6 +1164,34 @@ def snapshot():
             int(traffic.get("successful_accounts") or 0),
             int(parsed.get("ok") or 0),
         )
+    # Accumulate run-level attempts and failures across batch rotations
+    run_ok = ok
+    run_fail = fail
+    if proc.get("running") and secs > 0:
+        task_start_ts = time.time() - secs - 10
+        c_ok, c_fail = 0, 0
+        res_file = LOG_DIR / "register_results.jsonl"
+        if res_file.exists():
+            try:
+                for line in res_file.read_text(encoding="utf-8", errors="ignore").splitlines()[-500:]:
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    ts_str = rec.get("ts")
+                    if ts_str:
+                        dt = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if dt.timestamp() >= task_start_ts:
+                            if rec.get("status") == "ok":
+                                c_ok += 1
+                            elif rec.get("status") == "fail":
+                                c_fail += 1
+                run_ok = max(ok, c_ok)
+                run_fail = max(fail, c_fail)
+            except Exception:
+                pass
+    run_done = run_ok + run_fail
+    run_success_rate = round(100.0 * run_ok / run_done, 1) if run_done else 100.0
+
     return {
         "ts": time.time(),
         "ts_human": beijing_strftime("%Y-%m-%d %H:%M:%S"),
@@ -1178,9 +1207,8 @@ def snapshot():
         "process": proc,
         "control": control,
         "target": target,
-        "done_attempts": done,
+        "done_attempts": run_done,
         "progress_pct": pct,
-        "success_rate": round(100.0 * ok / done, 1) if done else None,
         "rate_per_min": rate_per_min,
         "eta": eta,
         "accounts": local_accs,
@@ -1200,6 +1228,11 @@ def snapshot():
         "blacklist_update": bl_err,
         "rates": rates,
         **{k: v for k, v in parsed.items() if k != "tail"},
+        "ok": eff_ok if is_orch else run_ok,
+        "batch_ok": ok,
+        "fail": run_fail,
+        "done": run_done,
+        "success_rate": run_success_rate,
         "workers": workers_show,
         "tail": (parsed.get("tail") or []) if PANEL_INCLUDE_TAIL else ["(raw log tail disabled; set PANEL_INCLUDE_TAIL=1)"],
     }
@@ -1426,6 +1459,74 @@ HTML = r"""<!DOCTYPE html>
     margin-bottom: 14px;
   }
   .section-meta { color: var(--muted); font-size: 12px; text-align: right; }
+  .status-running {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    vertical-align: middle;
+  }
+  .status-dot-pulse {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: var(--ok, #10b981);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    animation: dotPulse 1.8s infinite;
+  }
+  @keyframes dotPulse {
+    0% {
+      transform: scale(0.95);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+    70% {
+      transform: scale(1.15);
+      box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+    }
+    100% {
+      transform: scale(0.95);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
+  }
+  .status-shimmer {
+    font-weight: 700;
+    background: linear-gradient(
+      90deg,
+      #059669 0%,
+      #10b981 25%,
+      #a7f3d0 50%,
+      #10b981 75%,
+      #059669 100%
+    );
+    background-size: 200% auto;
+    color: transparent;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: textShimmer 2.2s linear infinite;
+  }
+  [data-theme="dark"] .status-shimmer {
+    background: linear-gradient(
+      90deg,
+      #10b981 0%,
+      #34d399 25%,
+      #e6fffa 50%,
+      #34d399 75%,
+      #10b981 100%
+    );
+    background-size: 200% auto;
+    color: transparent;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: textShimmer 2.2s linear infinite;
+  }
+  @keyframes textShimmer {
+    0% {
+      background-position: 200% center;
+    }
+    100% {
+      background-position: -200% center;
+    }
+  }
   .list-pager {
     display: flex;
     align-items: center;
@@ -1476,6 +1577,12 @@ HTML = r"""<!DOCTYPE html>
   input::placeholder, textarea::placeholder { color: var(--placeholder); opacity: 1; }
   input:hover, select:hover, textarea:hover { border-color: var(--hover-border); }
   input:focus, select:focus, textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-shadow); }
+  input:disabled, select:disabled, textarea:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    background: var(--surface-muted, rgba(125, 125, 125, 0.08));
+    border-color: var(--border);
+  }
   button {
     min-height: 38px;
     border: 1px solid var(--border-strong);
@@ -1608,7 +1715,16 @@ HTML = r"""<!DOCTYPE html>
   .progress-head h2 { font-size: 14px; font-weight: 700; margin: 0; }
   .bar-wrap { height: 7px; overflow: hidden; border-radius: 1px; background: var(--progress-track); }
   .bar { height: 100%; width: 0%; background: var(--accent); transition: width 420ms cubic-bezier(.16, 1, .3, 1), background-color 180ms ease; }
-  .progress-sub { margin-top: 7px; color: var(--muted); font-size: 12px; }
+  .progress-sub {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
   .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
   .three { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, .95fr); gap: 14px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -2354,9 +2470,6 @@ HTML = r"""<!DOCTYPE html>
         <button type="button" class="theme-option" data-theme-choice="light" aria-pressed="false" onclick="setTheme('light')">浅色</button>
         <button type="button" class="theme-option" data-theme-choice="dark" aria-pressed="false" onclick="setTheme('dark')">深色</button>
       </div>
-      <span class="badge run-status" id="run-status" aria-label="任务状态：加载中" aria-live="polite" aria-atomic="true"><span class="dot" id="run-dot"></span><span id="run-label">加载中</span></span>
-      <span class="badge mono" id="clock">--</span>
-      <span class="badge" id="sync-label">实时更新</span>
     </div>
   </div>
 </header>
@@ -2384,7 +2497,7 @@ HTML = r"""<!DOCTYPE html>
       </div>
       <div class="control-actions">
         <button class="primary" id="btn-toggle-task" onclick="toggleTask()">启动任务</button>
-        <button onclick="saveCtrl()">保存设置</button>
+        <button id="btn-save-ctrl" onclick="saveCtrl()">保存设置</button>
       </div>
     </div>
     <input type="hidden" id="add_count" value="40"/>
@@ -2885,6 +2998,7 @@ HTML = r"""<!DOCTYPE html>
 
   <!-- 兼容保留的静默隐藏容器，确保旧脚本引用不报错 -->
   <div id="hidden-legacy-views" style="display:none;" aria-hidden="true">
+    <span class="badge run-status" id="run-status"><span class="dot" id="run-dot"></span><span id="run-label"></span></span><span id="clock"></span><span id="sync-label"></span>
     <section class="card panel rate-panel"><div id="rate-kpis"></div><span id="rates-updated"></span></section>
     <section class="recovery-panel"><div id="recovery-kpis"></div><div id="recovery-msg"></div><span id="recovery-status"></span></section>
     <section id="quality-dash-card"><div id="quality-dash-kpis"></div><span id="quality-dash-status"></span></section>
@@ -3658,6 +3772,10 @@ function controlBody() {
 }
 
 async function saveCtrl() {
+  if (isTaskRunning) {
+    setMsg("ctrl-msg", "任务运行中已锁定参数，无法修改", "warn");
+    return;
+  }
   try {
     const body = controlBody();
     const j = await api("/api/control", { method: "POST", body: JSON.stringify(body) });
@@ -3682,7 +3800,14 @@ async function toggleTask() {
 
 async function doStart() {
   const btn = document.getElementById("btn-toggle-task") || document.getElementById("btn-start");
-  if (btn) btn.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "启动中...";
+  }
+  ["workers-input", "batch_count", "risk_pause", "btn-save-ctrl"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = true;
+  });
   setMsg("ctrl-msg", "正在启动…", "");
   try {
     await api("/api/control", { method: "POST", body: JSON.stringify(controlBody()) });
@@ -3698,7 +3823,10 @@ async function doStart() {
 
 async function doStop() {
   const btn = document.getElementById("btn-toggle-task") || document.getElementById("btn-stop");
-  if (btn) btn.disabled = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "停止中...";
+  }
   try {
     const j = await api("/api/stop", { method: "POST", body: "{}" });
     setMsg("ctrl-msg", "已停止 killed=" + JSON.stringify(j.killed || []), "ok");
@@ -4232,46 +4360,69 @@ function formatEtime(etime) {
 }
 
 function render(d) {
-  document.getElementById("clock").textContent = d.ts_human || "--";
+  const clockEl = document.getElementById("clock");
+  if (clockEl) clockEl.textContent = d.ts_human || "--";
   const logEl = document.getElementById("logname");
   if (logEl) {
     logEl.textContent =
-      (d.log_name || d.log || "--") + (d.process && d.process.etime ? " / 用时 " + d.process.etime : "");
+      (d.log_name || d.log || "--") + (d.process && d.process.etime ? " / " + d.process.etime : "");
   }
   const on = !!(d.process && d.process.running);
-  document.getElementById("run-dot").className = "dot " + (on ? "on" : (d.ended ? "done" : "off"));
+  const runDot = document.getElementById("run-dot");
+  if (runDot) runDot.className = "dot " + (on ? "on" : (d.ended ? "done" : "off"));
   const etimeFormatted = d.process && d.process.etime ? formatEtime(d.process.etime) : "";
   let runLabel = "已停止";
   if (d.process && d.process.orch_running) runLabel = "编排运行 #" + d.process.orch_pid;
   else if (d.process && d.process.batch_running) runLabel = "单批运行 #" + d.process.batch_pid;
   else if (d.ended) runLabel = "已完成";
   if (on) {
-    if (etimeFormatted) runLabel += " · 用时 " + etimeFormatted;
+    if (etimeFormatted) runLabel += " · " + etimeFormatted;
     if (d.workers) runLabel += " · 并发 " + d.workers;
     if (d.eta) runLabel += " · 预计 " + d.eta;
   }
-  document.getElementById("run-label").textContent = runLabel;
-  document.getElementById("run-status").setAttribute("aria-label", "任务状态：" + runLabel);
+  const runLabelEl = document.getElementById("run-label");
+  if (runLabelEl) runLabelEl.textContent = runLabel;
+  const runStatusEl = document.getElementById("run-status");
+  if (runStatusEl) runStatusEl.setAttribute("aria-label", "任务状态：" + runLabel);
   const sync = document.getElementById("sync-label");
   if (sync) {
     sync.textContent = "实时更新";
     sync.className = "badge";
   }
   isTaskRunning = on;
-  let ctrlStatusText = on ? "运行中" : "空闲";
-  if (on) {
-    if (etimeFormatted) ctrlStatusText += " · 用时 " + etimeFormatted;
-    if (d.workers) ctrlStatusText += " · 并发 " + d.workers;
-    if (d.eta) ctrlStatusText += " · 预计剩余 " + d.eta;
+  const ctrlStatusEl = document.getElementById("ctrl-status");
+  if (ctrlStatusEl) {
+    if (on) {
+      let parts = [];
+      if (etimeFormatted) parts.push(etimeFormatted);
+      if (d.workers) parts.push("并发 " + d.workers);
+      if (d.eta) parts.push("预计剩余 " + d.eta);
+      const metaStr = parts.length ? " · " + parts.join(" · ") : "";
+      ctrlStatusEl.innerHTML = `<span class="status-running"><span class="status-dot-pulse"></span><span class="status-shimmer">运行中</span></span>${metaStr}`;
+    } else {
+      ctrlStatusEl.innerHTML = `<span class="status-idle">空闲</span>`;
+    }
   }
-  document.getElementById("ctrl-status").textContent = ctrlStatusText;
 
   const btnToggle = document.getElementById("btn-toggle-task");
   if (btnToggle) {
     btnToggle.className = on ? "danger" : "primary";
     btnToggle.textContent = on ? "停止任务" : "启动任务";
     btnToggle.title = on ? "任务正在运行中，点击停止" : "点击启动注册任务";
+    btnToggle.disabled = false;
   }
+  const saveBtn = document.getElementById("btn-save-ctrl");
+  if (saveBtn) {
+    saveBtn.disabled = on;
+    saveBtn.title = on ? "任务运行中已锁定设置" : "保存设置到配置文件";
+  }
+  ["workers-input", "batch_count", "risk_pause"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.disabled = on;
+      el.title = on ? "任务运行中已锁定" : "";
+    }
+  });
   const bStart = document.getElementById("btn-start");
   if (bStart) bStart.disabled = on;
   const bStop = document.getElementById("btn-stop");
@@ -4323,7 +4474,13 @@ function render(d) {
   const rate = d.success_rate != null ? d.success_rate + "%" : "100%";
   const progSubEl = document.getElementById("prog-sub");
   if (progSubEl) {
-    progSubEl.textContent = `尝试 ${attempts} 次 · 失败 ${fails} 次 · 成功率 ${rate}`;
+    let trafficStr = "";
+    if (trafficTotal > 0) {
+      trafficStr = `流量消耗: ${formatBytes(trafficTotal)} (↑ ${formatBytes(traffic.bytes_up)} · ↓ ${formatBytes(traffic.bytes_down)})`;
+    } else {
+      trafficStr = "等待流量计量...";
+    }
+    progSubEl.innerHTML = `<span>尝试 ${attempts} 次 · 失败 ${fails} 次 · 成功率 ${rate}</span><span class="mono">${trafficStr}</span>`;
   }
 
   if (Array.isArray(d.accounts)) {
