@@ -1131,6 +1131,7 @@ HTML = r"""<!DOCTYPE html>
 <meta name="theme-color" content="#f3f4f1" id="theme-color"/>
 <title>GrokRegister</title>
 <script>
+  /* __TOKEN_PLACEHOLDER__ */
   (function () {
     const key = "GROK_REGISTER_THEME";
     let theme = "";
@@ -2818,12 +2819,12 @@ HTML = r"""<!DOCTYPE html>
     <section class="recovery-panel"><div id="recovery-kpis"></div><div id="recovery-msg"></div><span id="recovery-status"></span></section>
     <section id="quality-dash-card"><div id="quality-dash-kpis"></div><span id="quality-dash-status"></span></section>
     <section id="sso-dash-card"><div id="sso-dash-kpis"></div><span id="sso-dash-status"></span></section>
-    <section id="bfs-card"><div id="bfs-kpis"></div><div id="bfs-msg"></div><tbody id="bfs-body"></tbody><span id="bfs-status"></span></section>
-    <div id="stats-chips"></div><div id="stats-msg"></div><tbody id="stats-day"></tbody>
-    <div id="bl-kpis"></div><div id="bl-msg"></div><tbody id="bl-body"></tbody><div id="bl-err-chips"></div><tbody id="bl-added"></tbody>
+    <section id="bfs-card"><div id="bfs-kpis"></div><div id="bfs-msg"></div><table><tbody id="bfs-body"></tbody></table><span id="bfs-status"></span></section>
+    <div id="stats-chips"></div><div id="stats-msg"></div><table><tbody id="stats-day"></tbody></table>
+    <div id="bl-kpis"></div><div id="bl-msg"></div><table><tbody id="bl-body"></tbody></table><div id="bl-err-chips"></div><table><tbody id="bl-added"></tbody></table>
     <div id="workers-stats"></div><div id="fails"></div>
-    <span id="ok-page-meta"></span><tbody id="ok-body"></tbody><div id="ok-pager"></div><span id="ok-pager-info"></span><button id="ok-prev"></button><button id="ok-next"></button>
-    <span id="fail-page-meta"></span><tbody id="fail-body"></tbody><div id="fail-pager"></div><span id="fail-pager-info"></span><button id="fail-prev"></button><button id="fail-next"></button>
+    <span id="ok-page-meta"></span><table><tbody id="ok-body"></tbody></table><div id="ok-pager"></div><span id="ok-pager-info"></span><button id="ok-prev"></button><button id="ok-next"></button>
+    <span id="fail-page-meta"></span><table><tbody id="fail-body"></tbody></table><div id="fail-pager"></div><span id="fail-pager-info"></span><button id="fail-prev"></button><button id="fail-next"></button>
   </div>
   <footer id="footer"></footer>
 </main>
@@ -3065,6 +3066,11 @@ function setMsg(id, text, cls) {
   el.className = "msg" + (cls ? " " + cls : "");
 }
 function getToken() {
+  const urlTok = new URLSearchParams(location.search).get("token");
+  if (urlTok) {
+    try { localStorage.setItem("MONITOR_TOKEN", urlTok); } catch (e) {}
+    window.MONITOR_TOKEN = urlTok;
+  }
   const el = document.getElementById("monitor-token");
   const fromInput = el ? (el.value || "").trim() : "";
   const tok = (fromInput || window.MONITOR_TOKEN || localStorage.getItem("MONITOR_TOKEN") || "").trim();
@@ -3074,8 +3080,9 @@ function getToken() {
 function loadTokenField() {
   const el = document.getElementById("monitor-token");
   if (!el) return;
-  if (!el.value) {
-    try { el.value = localStorage.getItem("MONITOR_TOKEN") || window.MONITOR_TOKEN || ""; } catch (e) {}
+  const tok = getToken();
+  if (tok && !el.value) {
+    try { el.value = tok; } catch (e) {}
   }
 }
 async function api(path, opts) {
@@ -3968,24 +3975,36 @@ async function exportQuality(kind) {
 function renderBlacklist(bl, upd) {
   bl = bl || {};
   upd = upd || {};
-  document.getElementById("bl-kpis").innerHTML = [
-    ["ASN 数", bl.count ?? 0, "accent"],
-    ["ISP 关键字", (bl.isp_keywords || []).length, ""],
-    ["解析错误", (bl.errors || []).length, (bl.errors || []).length ? "fail" : "ok"],
-  ].map(([l,v,c]) => `<div class="chip"><span>${esc(l)}</span><b class="${c}">${esc(v)}</b></div>`).join("");
-  document.getElementById("bl-body").innerHTML = (bl.items || []).map(i =>
-    `<tr><td class="mono">AS${esc(i.asn)}</td><td>${esc(i.note || "")}</td></tr>`
-  ).join("") || '<tr><td colspan="2" style="color:var(--muted)">空</td></tr>';
-  document.getElementById("bl-err-chips").innerHTML = [
-    ["更新错误合计", upd.error_count ?? 0, (upd.error_count ? "fail" : "ok")],
-    ["lookup 失败", upd.lookup_fail_count ?? 0, "warn"],
-    ["analyze 错误", upd.analyze_error_count ?? 0, "warn"],
-    ["暂停扩黑次数", upd.hit_pause_count ?? 0, ""],
-    ["历史新增记录", upd.added_total ?? 0, "accent"],
-  ].map(([l,v,c]) => `<div class="chip"><span>${esc(l)}</span><b class="${c}">${esc(v)}</b></div>`).join("");
-  document.getElementById("bl-added").innerHTML = (upd.recent_added || []).slice().reverse().map(a =>
-    `<tr><td class="mono">AS${esc(a.asn)}</td><td class="mono">${esc(a.log || "")}</td></tr>`
-  ).join("") || '<tr><td colspan="2" style="color:var(--muted)">暂无自动新增</td></tr>';
+  const blKpis = document.getElementById("bl-kpis");
+  if (blKpis) {
+    blKpis.innerHTML = [
+      ["ASN 数", bl.count ?? 0, "accent"],
+      ["ISP 关键字", (bl.isp_keywords || []).length, ""],
+      ["解析错误", (bl.errors || []).length, (bl.errors || []).length ? "fail" : "ok"],
+    ].map(([l,v,c]) => `<div class="chip"><span>${esc(l)}</span><b class="${c}">${esc(v)}</b></div>`).join("");
+  }
+  const blBody = document.getElementById("bl-body");
+  if (blBody) {
+    blBody.innerHTML = (bl.items || []).map(i =>
+      `<tr><td class="mono">AS${esc(i.asn)}</td><td>${esc(i.note || "")}</td></tr>`
+    ).join("") || '<tr><td colspan="2" style="color:var(--muted)">空</td></tr>';
+  }
+  const blErr = document.getElementById("bl-err-chips");
+  if (blErr) {
+    blErr.innerHTML = [
+      ["更新错误合计", upd.error_count ?? 0, (upd.error_count ? "fail" : "ok")],
+      ["lookup 失败", upd.lookup_fail_count ?? 0, "warn"],
+      ["analyze 错误", upd.analyze_error_count ?? 0, "warn"],
+      ["暂停扩黑次数", upd.hit_pause_count ?? 0, ""],
+      ["历史新增记录", upd.added_total ?? 0, "accent"],
+    ].map(([l,v,c]) => `<div class="chip"><span>${esc(l)}</span><b class="${c}">${esc(v)}</b></div>`).join("");
+  }
+  const blAdded = document.getElementById("bl-added");
+  if (blAdded) {
+    blAdded.innerHTML = (upd.recent_added || []).slice().reverse().map(a =>
+      `<tr><td class="mono">AS${esc(a.asn)}</td><td class="mono">${esc(a.log || "")}</td></tr>`
+    ).join("") || '<tr><td colspan="2" style="color:var(--muted)">暂无自动新增</td></tr>';
+  }
 }
 
 function rateCls(r) {
@@ -4039,21 +4058,27 @@ function renderStats(s, opts) {
   if (s.rates) renderRates(s.rates);
   const jsonlOk = (typeof s.jsonl_ok === "number") ? s.jsonl_ok : (lastFullStats && lastFullStats.jsonl_ok);
   const jsonlRisk = (typeof s.jsonl_risk === "number") ? s.jsonl_risk : (lastFullStats && lastFullStats.jsonl_risk);
-  document.getElementById("stats-chips").innerHTML = [
-    ["CPA", s.cpa ?? "--", "accent"],
-    ["CPA 变化", s.cpa_delta ?? "--", "ok"],
-    ["本批成功", s.batch_ok ?? 0, "ok"],
-    ["本批失败", s.batch_fail ?? 0, "fail"],
-    ["jsonl ok", jsonlOk != null ? jsonlOk : "--", "ok"],
-    ["jsonl risk", jsonlRisk != null ? jsonlRisk : "--", "warn"],
-  ].map(([l,v,c]) => `<div class="chip"><span>${esc(l)}</span><b class="${c}">${esc(v)}</b></div>`).join("");
+  const sc = document.getElementById("stats-chips");
+  if (sc) {
+    sc.innerHTML = [
+      ["CPA", s.cpa ?? "--", "accent"],
+      ["CPA 变化", s.cpa_delta ?? "--", "ok"],
+      ["本批成功", s.batch_ok ?? 0, "ok"],
+      ["本批失败", s.batch_fail ?? 0, "fail"],
+      ["jsonl ok", jsonlOk != null ? jsonlOk : "--", "ok"],
+      ["jsonl risk", jsonlRisk != null ? jsonlRisk : "--", "warn"],
+    ].map(([l,v,c]) => `<div class="chip"><span>${esc(l)}</span><b class="${c}">${esc(v)}</b></div>`).join("");
+  }
   const byDay = (s.by_day && Object.keys(s.by_day).length)
     ? s.by_day
     : ((lastFullStats && lastFullStats.by_day) || {});
   const days = Object.entries(byDay).sort((a,b) => b[0].localeCompare(a[0])).slice(0, 10);
-  document.getElementById("stats-day").innerHTML = days.length ? days.map(([d, v]) =>
-    `<tr><td class="mono">${esc(d)}</td><td class="ok">${v.ok||0}</td><td class="warn">${v.risk||0}</td><td class="fail">${v.fail||0}</td></tr>`
-  ).join("") : '<tr><td colspan="4" style="color:var(--muted)">无 jsonl 数据</td></tr>';
+  const sd = document.getElementById("stats-day");
+  if (sd) {
+    sd.innerHTML = days.length ? days.map(([d, v]) =>
+      `<tr><td class="mono">${esc(d)}</td><td class="ok">${v.ok||0}</td><td class="warn">${v.risk||0}</td><td class="fail">${v.fail||0}</td></tr>`
+    ).join("") : '<tr><td colspan="4" style="color:var(--muted)">无 jsonl 数据</td></tr>';
+  }
   // 保留「统计已刷新」文案，不被 2s 轮询清掉
   if (!opts.liveMerge && s.refreshed_at) {
     const el = document.getElementById("stats-msg");
@@ -4122,41 +4147,50 @@ function render(d) {
     "尝试 " + (d.done_attempts ?? 0) + " / " + (on ? "进程运行中" : "未运行")
     + (d.ended ? " / 结束：成功 " + d.ended.success + "，失败 " + d.ended.fail : "");
 
-  renderBlacklist(d.blacklist, d.blacklist_update);
-  // 2s 快照：只更新本批/CPA，绝不清空 jsonl / 按日表
-  renderStats({
-    cpa: d.cpa,
-    cpa_delta: d.cpa_delta,
-    base_cpa: d.base_cpa,
-    batch_ok: d.ok,
-    batch_fail: d.fail,
-    rates: d.rates || {},
-  }, { liveMerge: true });
-
-  const wset = new Set([...(Object.keys(d.worker_ok || {})), ...(Object.keys(d.worker_fail || {}))]);
-  const ws = [...wset].sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
-  const wsEl = document.getElementById("workers-stats");
-  if (wsEl) wsEl.innerHTML = ws.length ? ws.map(w =>
-    `<div class="chip"><span>${esc(w)}</span><b><span class="ok">${d.worker_ok && d.worker_ok[w] || 0}</span> <span style="color:var(--muted)">/</span> <span class="fail">${d.worker_fail && d.worker_fail[w] || 0}</span></b></div>`
-  ).join("") : '<span style="color:var(--muted)">暂无</span>';
-  const fk = Object.entries(d.fail_kinds || {}).sort((a, b) => b[1] - a[1]);
-  const fkEl = document.getElementById("fails");
-  if (fkEl) fkEl.innerHTML = fk.length ? fk.map(([k, v]) =>
-    `<div class="chip"><span>${esc(k)}</span><b class="fail">${v}</b></div>`
-  ).join("") : '<span style="color:var(--muted)">暂无失败</span>';
-  okRowsCache = Array.isArray(d.recent_ok) ? d.recent_ok.slice() : [];
-  failRowsCache = Array.isArray(d.recent_fail) ? d.recent_fail.slice() : [];
-  renderOkPage();
-  renderFailPage();
   if (Array.isArray(d.accounts)) {
     allAccountsCache = d.accounts;
     renderAccountsPage();
   }
-  document.getElementById("tail").textContent = (d.tail || []).join("\n");
-  document.getElementById("footer").textContent =
-    "服务 " + location.host + " / 日志 " + (d.log || "") + " / 2 秒轮询 / "
-    + (d.log_size ? (d.log_size / 1024).toFixed(0) + " KB" : "0 KB")
-    + " / 黑名单 " + ((d.blacklist && d.blacklist.count) || 0) + " ASN";
+  const tailEl = document.getElementById("tail");
+  if (tailEl) tailEl.textContent = (d.tail || []).join("\n");
+  const footEl = document.getElementById("footer");
+  if (footEl) {
+    footEl.textContent =
+      "服务 " + location.host + " / 日志 " + (d.log || "") + " / 2 秒轮询 / "
+      + (d.log_size ? (d.log_size / 1024).toFixed(0) + " KB" : "0 KB")
+      + " / 黑名单 " + ((d.blacklist && d.blacklist.count) || 0) + " ASN";
+  }
+
+  try {
+    renderBlacklist(d.blacklist, d.blacklist_update);
+    // 2s 快照：只更新本批/CPA，绝不清空 jsonl / 按日表
+    renderStats({
+      cpa: d.cpa,
+      cpa_delta: d.cpa_delta,
+      base_cpa: d.base_cpa,
+      batch_ok: d.ok,
+      batch_fail: d.fail,
+      rates: d.rates || {},
+    }, { liveMerge: true });
+
+    const wset = new Set([...(Object.keys(d.worker_ok || {})), ...(Object.keys(d.worker_fail || {}))]);
+    const ws = [...wset].sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    const wsEl = document.getElementById("workers-stats");
+    if (wsEl) wsEl.innerHTML = ws.length ? ws.map(w =>
+      `<div class="chip"><span>${esc(w)}</span><b><span class="ok">${d.worker_ok && d.worker_ok[w] || 0}</span> <span style="color:var(--muted)">/</span> <span class="fail">${d.worker_fail && d.worker_fail[w] || 0}</span></b></div>`
+    ).join("") : '<span style="color:var(--muted)">暂无</span>';
+    const fk = Object.entries(d.fail_kinds || {}).sort((a, b) => b[1] - a[1]);
+    const fkEl = document.getElementById("fails");
+    if (fkEl) fkEl.innerHTML = fk.length ? fk.map(([k, v]) =>
+      `<div class="chip"><span>${esc(k)}</span><b class="fail">${v}</b></div>`
+    ).join("") : '<span style="color:var(--muted)">暂无失败</span>';
+    okRowsCache = Array.isArray(d.recent_ok) ? d.recent_ok.slice() : [];
+    failRowsCache = Array.isArray(d.recent_fail) ? d.recent_fail.slice() : [];
+    renderOkPage();
+    renderFailPage();
+  } catch (err) {
+    /* silent fallback for legacy views */
+  }
 }
 
 function listPageCount(total) {
@@ -4189,20 +4223,25 @@ function renderOkPage() {
   const pages = listPageCount(rows.length);
   const start = (okPage - 1) * LIST_PAGE_SIZE;
   const slice = rows.slice(start, start + LIST_PAGE_SIZE);
-  document.getElementById("ok-body").innerHTML = slice.length
-    ? slice.map(r =>
-      `<tr><td class="mono">${esc(r.t)}</td><td>${esc(r.w)}</td><td class="mono">${esc(r.email)}</td><td>${renderOkQuality(r.quality)}</td></tr>`
-    ).join("")
-    : '<tr><td colspan="4" style="color:var(--muted)">暂无记录</td></tr>';
+  const okBody = document.getElementById("ok-body");
+  if (okBody) {
+    okBody.innerHTML = slice.length
+      ? slice.map(r =>
+        `<tr><td class="mono">${esc(r.t)}</td><td>${esc(r.w)}</td><td class="mono">${esc(r.email)}</td><td>${renderOkQuality(r.quality)}</td></tr>`
+      ).join("")
+      : '<tr><td colspan="4" style="color:var(--muted)">暂无记录</td></tr>';
+  }
   const meta = rows.length
     ? `共 ${rows.length} 条 · 第 ${okPage}/${pages} 页`
     : "共 0 条";
-  document.getElementById("ok-page-meta").textContent = meta;
-  document.getElementById("ok-pager-info").textContent = rows.length
-    ? `每页 ${LIST_PAGE_SIZE} 条`
-    : "";
-  document.getElementById("ok-prev").disabled = okPage <= 1 || !rows.length;
-  document.getElementById("ok-next").disabled = okPage >= pages || !rows.length;
+  const okMeta = document.getElementById("ok-page-meta");
+  if (okMeta) okMeta.textContent = meta;
+  const okInfo = document.getElementById("ok-pager-info");
+  if (okInfo) okInfo.textContent = rows.length ? `每页 ${LIST_PAGE_SIZE} 条` : "";
+  const okPrev = document.getElementById("ok-prev");
+  if (okPrev) okPrev.disabled = okPage <= 1 || !rows.length;
+  const okNext = document.getElementById("ok-next");
+  if (okNext) okNext.disabled = okPage >= pages || !rows.length;
 }
 
 function renderFailPage() {
@@ -4211,20 +4250,25 @@ function renderFailPage() {
   const pages = listPageCount(rows.length);
   const start = (failPage - 1) * LIST_PAGE_SIZE;
   const slice = rows.slice(start, start + LIST_PAGE_SIZE);
-  document.getElementById("fail-body").innerHTML = slice.length
-    ? slice.map(r =>
-      `<tr><td class="mono">${esc(r.t)}</td><td>${esc(r.w)}</td><td>${esc(r.kind)}</td><td class="mono">${esc(r.msg)}</td></tr>`
-    ).join("")
-    : '<tr><td colspan="4" style="color:var(--muted)">暂无记录</td></tr>';
+  const failBody = document.getElementById("fail-body");
+  if (failBody) {
+    failBody.innerHTML = slice.length
+      ? slice.map(r =>
+        `<tr><td class="mono">${esc(r.t)}</td><td>${esc(r.w)}</td><td>${esc(r.kind)}</td><td class="mono">${esc(r.msg)}</td></tr>`
+      ).join("")
+      : '<tr><td colspan="4" style="color:var(--muted)">暂无记录</td></tr>';
+  }
   const meta = rows.length
     ? `共 ${rows.length} 条 · 第 ${failPage}/${pages} 页`
     : "共 0 条";
-  document.getElementById("fail-page-meta").textContent = meta;
-  document.getElementById("fail-pager-info").textContent = rows.length
-    ? `每页 ${LIST_PAGE_SIZE} 条`
-    : "";
-  document.getElementById("fail-prev").disabled = failPage <= 1 || !rows.length;
-  document.getElementById("fail-next").disabled = failPage >= pages || !rows.length;
+  const failMeta = document.getElementById("fail-page-meta");
+  if (failMeta) failMeta.textContent = meta;
+  const failInfo = document.getElementById("fail-pager-info");
+  if (failInfo) failInfo.textContent = rows.length ? `每页 ${LIST_PAGE_SIZE} 条` : "";
+  const failPrev = document.getElementById("fail-prev");
+  if (failPrev) failPrev.disabled = failPage <= 1 || !rows.length;
+  const failNext = document.getElementById("fail-next");
+  if (failNext) failNext.disabled = failPage >= pages || !rows.length;
 }
 
 document.getElementById("ok-prev").addEventListener("click", () => {
@@ -4475,7 +4519,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
-            self._send(200, HTML.encode("utf-8"), "text/html; charset=utf-8")
+            tok = expected_token()
+            token_js = f"window.MONITOR_TOKEN = {json.dumps(tok)};" if tok else ""
+            page_html = HTML.replace("/* __TOKEN_PLACEHOLDER__ */", token_js)
+            self._send(200, page_html.encode("utf-8"), "text/html; charset=utf-8")
             return
         if u.path in FONT_ASSETS:
             path = FONT_ASSETS[u.path]
