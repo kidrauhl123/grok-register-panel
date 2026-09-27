@@ -213,6 +213,67 @@ RE_END = re.compile(r"任务结束。成功\s*(\d+)\s*\|\s*失败\s*(\d+)")
 RE_ADDED_BL = re.compile(r"ADDED blacklist AS(\d+)")
 RE_LOOKUP_FAIL = re.compile(r"lookup fail", re.I)
 RE_ANALYZE_ERR = re.compile(r"analyze error", re.I)
+RE_QUALITY = re.compile(r"降智测试:\s*([a-zA-Z0-9_\-]+)")
+
+
+def get_email_quality(email: str, default_verdict: str = None) -> str:
+    if default_verdict:
+        return default_verdict
+    if not email:
+        return "-"
+    auth_file = CPA_DIR / f"xai-{email}.json"
+    if auth_file.is_file():
+        try:
+            d = json.loads(auth_file.read_text(encoding="utf-8"))
+            return d.get("quality_verdict") or ("healthy" if d.get("access_token") else "cpa_ok")
+        except Exception:
+            return "cpa_ok"
+    return "sso_only"
+
+
+def _extract_recent_oks_from_file(file_path: Path, seen_emails: set, limit: int = 25):
+    if not file_path or not file_path.is_file():
+        return []
+    try:
+        size = file_path.stat().st_size
+        max_tail = 300_000
+        with file_path.open("rb") as f:
+            if size > max_tail:
+                f.seek(size - max_tail)
+                f.readline()
+            text = f.read().decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        extracted = []
+        w_quality = {}
+        for line in lines:
+            mq = RE_QUALITY.search(line)
+            if mq:
+                wm = RE_WORKER.search(line)
+                wk = f"W{wm.group(1)}" if wm else "_default"
+                w_quality[wk] = mq.group(1)
+            if RE_OK.search(line):
+                em = RE_EMAIL_OK.search(line)
+                email = em.group(1).strip() if em else ""
+                if not email or email in seen_emails:
+                    continue
+                seen_emails.add(email)
+                wm = RE_WORKER.search(line)
+                w = f"W{wm.group(1)}" if wm else "?"
+                wk = w if wm else "_default"
+                q = w_quality.pop(wk, None)
+                if not q:
+                    if "CPA 入库失败" in line or "CPA入库失败" in line:
+                        q = "sso_only"
+                    else:
+                        q = get_email_quality(email)
+                ts = line[1:9] if line.startswith("[") else ""
+                extracted.append({"t": ts, "w": w, "email": email, "quality": q or "-"})
+                if len(extracted) >= limit:
+                    break
+        return extracted
+    except Exception:
+        return []
+
 
 
 def _read_json(path: Path, default=None):
@@ -368,6 +429,7 @@ def parse_log(path, max_tail=400_000):
     fail_kinds = {}
     worker_ok = {}
     worker_fail = {}
+    worker_last_quality = {}
 
     for line in lines:
         m = RE_BATCH.search(line) or RE_START.search(line)
@@ -377,15 +439,28 @@ def parse_log(path, max_tail=400_000):
         if m:
             ended = {"success": int(m.group(1)), "fail": int(m.group(2))}
 
+        mq = RE_QUALITY.search(line)
+        if mq:
+            wm = RE_WORKER.search(line)
+            wk = f"W{wm.group(1)}" if wm else "_default"
+            worker_last_quality[wk] = mq.group(1)
+
         if RE_OK.search(line):
             ok += 1
             em = RE_EMAIL_OK.search(line)
-            email = em.group(1) if em else ""
+            email = em.group(1).strip() if em else ""
             wm = RE_WORKER.search(line)
             w = f"W{wm.group(1)}" if wm else "?"
+            wk = w if wm else "_default"
             worker_ok[w] = worker_ok.get(w, 0) + 1
             ts = line[1:9] if line.startswith("[") else ""
-            recent_ok.append({"t": ts, "w": w, "email": mask_email(email)})
+            q = worker_last_quality.pop(wk, None)
+            if not q:
+                if "CPA 入库失败" in line or "CPA入库失败" in line:
+                    q = "sso_only"
+                else:
+                    q = get_email_quality(email)
+            recent_ok.append({"t": ts, "w": w, "email": email, "quality": q or "-"})
         if RE_FAIL.search(line):
             fail += 1
             fm = RE_FAIL_KIND.search(line)
@@ -411,6 +486,24 @@ def parse_log(path, max_tail=400_000):
             bot1 += 1
         if RE_BFS.search(line):
             bfs_hits += 1
+
+    if len(recent_ok) < 25 and path and path.parent:
+        try:
+            seen_emails = {r["email"] for r in recent_ok if r.get("email")}
+            all_cands = sorted(path.parent.glob("batch*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+            all_cands = [p for p in all_cands if "sticky" not in p.name and "rotate" not in p.name]
+            if path in all_cands:
+                p_idx = all_cands.index(path)
+                older_oks = []
+                for prev_path in all_cands[p_idx + 1:p_idx + 4]:
+                    if len(recent_ok) + len(older_oks) >= 25:
+                        break
+                    older = _extract_recent_oks_from_file(prev_path, seen_emails, limit=25)
+                    older_oks = older + older_oks
+                if older_oks:
+                    recent_ok = older_oks + recent_ok
+        except Exception:
+            pass
 
     last_lines = lines[-40:]
     if size > max_tail:
@@ -2029,7 +2122,7 @@ HTML = r"""<!DOCTYPE html>
       <button type="button" class="view-switch" id="quality-view-toggle" aria-label="打开降智测试" title="降智测试" aria-controls="quality-view" aria-expanded="false" data-active="false" onclick="toggleQualityView()">
         <span id="quality-view-label" aria-hidden="true">降智测试</span>
       </button>
-      <button type="button" class="view-switch" id="sso-view-toggle" aria-label="打开 SSO 风控（已停用）" title="SSO 风控（已停用）" aria-controls="sso-view" aria-expanded="false" data-active="false" onclick="toggleSsoView()">
+      <button type="button" class="view-switch" id="sso-view-toggle" style="display:none;" aria-label="打开 SSO 风控（已停用）" title="SSO 风控（已停用）" aria-controls="sso-view" aria-expanded="false" data-active="false" onclick="toggleSsoView()">
         <span id="sso-view-label" aria-hidden="true">SSO 风控</span>
       </button>
       <button type="button" class="view-switch" id="help-view-toggle" aria-label="打开问题和使用" title="问题和使用" aria-controls="help-view" aria-expanded="false" data-active="false" onclick="toggleAppView()">
@@ -2574,7 +2667,7 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </section>
 
-  <section class="card panel" aria-labelledby="sso-dash-title">
+  <section class="card panel" aria-labelledby="sso-dash-title" style="display:none;">
     <div class="section-head">
       <h2 id="sso-dash-title">SSO 风控（已停用）</h2>
       <span class="section-meta mono" id="sso-dash-status">不再判定</span>
@@ -2659,7 +2752,7 @@ HTML = r"""<!DOCTYPE html>
         <h2>最近成功</h2>
         <span class="section-meta" id="ok-page-meta"></span>
       </div>
-      <div class="table-scroll"><table><thead><tr><th>时间</th><th>W</th><th>邮箱</th></tr></thead><tbody id="ok-body"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>时间</th><th>W</th><th>邮箱</th><th>降智检测</th></tr></thead><tbody id="ok-body"></tbody></table></div>
       <div class="list-pager" id="ok-pager">
         <span class="pager-info" id="ok-pager-info"></span>
         <div class="pager-btns">
@@ -4028,6 +4121,19 @@ function clampPage(page, total) {
   return p;
 }
 
+function renderOkQuality(q) {
+  if (!q || q === "-") return '<span style="color:var(--muted)">-</span>';
+  const lq = String(q).toLowerCase();
+  if (lq === "healthy") return '<span style="color:#2ea043;font-weight:600">✅ healthy</span>';
+  if (lq === "hard") return '<span style="color:#f85149;font-weight:600">❌ 降智(hard)</span>';
+  if (lq === "soft") return '<span style="color:#d29922;font-weight:600">⚠️ 降智(soft)</span>';
+  if (lq === "burst") return '<span style="color:#f85149;font-weight:600">❌ 降智(burst)</span>';
+  if (lq === "risk") return '<span style="color:#f85149;font-weight:600">⛔ 风控</span>';
+  if (lq === "sso_only" || lq.includes("sso")) return '<span style="color:#d29922;font-weight:600">⚠️ 仅SSO</span>';
+  if (lq === "cpa_ok") return '<span style="color:#2ea043;font-weight:600">✅ 已入库</span>';
+  return `<span style="color:var(--text);font-weight:600">${esc(q)}</span>`;
+}
+
 function renderOkPage() {
   const rows = okRowsCache || [];
   okPage = clampPage(okPage, rows.length);
@@ -4036,9 +4142,9 @@ function renderOkPage() {
   const slice = rows.slice(start, start + LIST_PAGE_SIZE);
   document.getElementById("ok-body").innerHTML = slice.length
     ? slice.map(r =>
-      `<tr><td class="mono">${esc(r.t)}</td><td>${esc(r.w)}</td><td class="mono">${esc(r.email)}</td></tr>`
+      `<tr><td class="mono">${esc(r.t)}</td><td>${esc(r.w)}</td><td class="mono">${esc(r.email)}</td><td>${renderOkQuality(r.quality)}</td></tr>`
     ).join("")
-    : '<tr><td colspan="3" style="color:var(--muted)">暂无记录</td></tr>';
+    : '<tr><td colspan="4" style="color:var(--muted)">暂无记录</td></tr>';
   const meta = rows.length
     ? `共 ${rows.length} 条 · 第 ${okPage}/${pages} 页`
     : "共 0 条";

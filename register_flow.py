@@ -1796,9 +1796,15 @@ def _try_click_turnstile_frame(log_callback=None):
 
     # ---- 策略 1：page 级平滑贝塞尔滑动至 Turnstile 复选框并拟人点击（优先）----
     try:
-        iframe_el = raw_page.query_selector(
-            'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'
-        )
+        iframe_el = None
+        try:
+            iframe_el = turnstile_frame.frame_element()
+        except Exception:
+            pass
+        if not iframe_el:
+            iframe_el = raw_page.query_selector(
+                'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'
+            )
         if iframe_el:
             box = iframe_el.bounding_box()
             if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
