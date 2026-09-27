@@ -2568,6 +2568,14 @@ def main() -> int:
                     )
                     print(f"  💾 CPA 远程 → {args.cpa_remote_url.rstrip('/')}/.../{name}")
 
+            # 远端 chenyme grok2api (Premsir) 导入，受 grok2api_remote_only_healthy 门禁控制
+            try:
+                from grok2api_remote import maybe_import_remote
+                verdict = (cpa_record or {}).get("quality_verdict") or ""
+                maybe_import_remote(record=cpa_record, sso=sso, email=email, log=print, verdict=verdict)
+            except Exception as remote_exc:
+                print(f"  ⚠️ chenyme grok2api 远程推送异常: {remote_exc}")
+
             ok += 1
             succeeded_ssos.add(sso)
             if args.consume_success and args.sso:
