@@ -1852,40 +1852,48 @@ HTML = r"""<!DOCTYPE html>
   .proxy-sort-control select:hover { border-color: var(--border-strong, #64748b); }
   .proxy-sort-control select:focus { outline: none; border-color: var(--accent); }
   .proxy-table-wrap { overflow: auto; border: 1px solid var(--border); background: var(--surface-raised); }
-  .proxy-table { min-width: 1120px; table-layout: fixed; }
+  .proxy-table { min-width: 1145px; table-layout: fixed; }
   .proxy-table th.sortable { cursor: pointer; user-select: none; transition: background 0.15s ease, color 0.15s ease; }
   .proxy-table th.sortable:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
   .sort-indicator { display: inline-block; font-size: 9px; margin-left: 2px; color: var(--accent, #38bdf8); }
   .proxy-table th:nth-child(1) { width: 78px; }
-  .proxy-table th:nth-child(2) { width: 95px; }
-  .proxy-table th:nth-child(3) { width: 245px; }
+  .proxy-table th:nth-child(2) { width: 105px; }
+  .proxy-table th:nth-child(3) { width: 260px; }
   .proxy-table th:nth-child(4) { width: 125px; }
   .proxy-table th:nth-child(5) { width: 135px; }
   .proxy-table th:nth-child(6) { width: 78px; }
   .proxy-table th:nth-child(7) { width: 165px; }
   .proxy-table th:nth-child(8) { width: 64px; }
   .proxy-table th:nth-child(9) { width: 135px; }
+  .proxy-table td { overflow: hidden; }
   .proxy-score-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-  .score-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.3px; }
+  .score-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.3px; flex-shrink: 0; }
   .score-badge.tier-sp { background: rgba(245, 158, 11, 0.18); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4); }
   .score-badge.tier-s { background: rgba(16, 185, 129, 0.18); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); }
   .score-badge.tier-a { background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); }
   .score-badge.tier-b { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
   .score-badge.tier-c { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); }
   .score-badge.tier-d { background: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.3); }
-  .score-val { font-size: 13px; font-weight: 600; }
+  .score-val { font-size: 13px; font-weight: 600; flex-shrink: 0; }
   .score-val.pos { color: var(--text); }
   .score-val.neg { color: #f43f5e; }
   .proxy-endpoint { overflow-wrap: anywhere; }
   .proxy-meta { margin-top: 3px; color: var(--muted); font-size: 10px; }
   .proxy-tag {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 13px;
     font-weight: 600;
     color: var(--text);
     margin-bottom: 2px;
-    white-space: nowrap;
+    min-width: 0;
+  }
+  .proxy-tag-text {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .proxy-tag-none {
     color: var(--muted);
@@ -1899,9 +1907,9 @@ HTML = r"""<!DOCTYPE html>
     font-weight: 700;
     padding: 1px 4px;
     border-radius: 2px;
-    margin-left: 5px;
     letter-spacing: 0.2px;
-    vertical-align: middle;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   .mult-badge.low { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
   .mult-badge.mid { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
@@ -1920,8 +1928,8 @@ HTML = r"""<!DOCTYPE html>
     font-weight: 800;
     letter-spacing: 0.5px;
     box-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
-    margin-right: 4px;
-    vertical-align: middle;
+    flex-shrink: 0;
+    white-space: nowrap;
     animation: mvp-glow 2s ease-in-out infinite alternate;
   }
   @keyframes mvp-glow {
@@ -3644,7 +3652,8 @@ function renderProxyPool(data) {
     else if (mult > 3.0) multBadge = `<span class="mult-badge high" title="流量倍率 ${mult}x">${mult}x</span>`;
     else if (mult > 1.0) multBadge = `<span class="mult-badge mid" title="流量倍率 ${mult}x">${mult}x</span>`;
     else multBadge = `<span class="mult-badge low" title="流量倍率 1.0x (原价/优选)">1.0x</span>`;
-    const tagHtml = item.tag ? `<div class="proxy-tag" title="${esc(item.tag)}">${mvpBadge}${esc(item.tag)}${multBadge}</div>` : `<div class="proxy-tag proxy-tag-none">${mvpBadge}未命名节点${multBadge}</div>`;
+    const tagText = esc(item.tag || "");
+    const tagHtml = tagText ? `<div class="proxy-tag" title="${tagText}">${mvpBadge}<span class="proxy-tag-text">${tagText}</span>${multBadge}</div>` : `<div class="proxy-tag proxy-tag-none">${mvpBadge}<span class="proxy-tag-text">未命名节点</span>${multBadge}</div>`;
     const battles = Number(item.total_battles || 0);
     const winRate = Number(item.win_rate || 0);
     let badgeHtml = "";
@@ -3663,7 +3672,6 @@ function renderProxyPool(data) {
     const scoreTip = getScoreTooltip(item, score);
     const scoreValCls = score >= 0 ? "pos" : "neg";
     const scoreHtml = `<div class="proxy-score-cell" title="${esc(scoreTip)}">
-      ${isTopMvp ? '<span class="mvp-crown-badge" title="当前榜首 MVP">👑 MVP</span>' : ''}
       <span class="score-badge ${tier.cls}">${esc(tier.tier)}</span>
       <span class="score-val mono ${scoreValCls}">${score.toFixed(1)}</span>
     </div>`;
