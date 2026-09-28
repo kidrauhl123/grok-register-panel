@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import ipaddress
 import os
@@ -32,6 +33,9 @@ STATE_PATH = Path(
 )
 LOCK_PATH = STATE_PATH.with_suffix(STATE_PATH.suffix + ".lock")
 LEGACY_PATH = Path(os.environ.get("PROXY_POOL_LEGACY_FILE", str(ROOT / "proxies.txt")))
+META_PATH = Path(
+    os.environ.get("PROXY_POOL_META_FILE", str(ROOT / "log" / "ss_pool_meta.json"))
+)
 
 ALLOWED_SCHEMES = {"http", "https", "socks5", "socks5h"}
 ADVANCED_SCHEMES = {"vless", "vmess", "trojan", "hysteria2", "hy2", "tuic", "ss"}
@@ -334,6 +338,156 @@ def _proxy_id(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
 
 
+_META_TAGS_CACHE: dict[str, object] = {"mtime": 0.0, "tags": {}}
+_META_TAGS_LOCK = threading.Lock()
+
+
+def _get_proxy_meta_tags() -> dict[int, str]:
+    global _META_TAGS_CACHE
+    try:
+        if not META_PATH.exists():
+            return {}
+        mtime = META_PATH.stat().st_mtime
+        with _META_TAGS_LOCK:
+            if mtime == _META_TAGS_CACHE.get("mtime"):
+                return _META_TAGS_CACHE["tags"]  # type: ignore
+        import json
+
+        data = json.loads(META_PATH.read_text(encoding="utf-8") or "[]")
+        tags: dict[int, str] = {}
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict) and "port" in row and "tag" in row:
+                    try:
+                        p = int(row["port"])
+                        t = str(row["tag"]).strip()
+                        if t:
+                            tags[p] = t
+                    except (ValueError, TypeError):
+                        pass
+        with _META_TAGS_LOCK:
+            _META_TAGS_CACHE = {"mtime": mtime, "tags": tags}
+        return tags
+    except Exception:
+        return {}
+
+
+_KDA_CACHE: dict[str, object] = {"expires_at": 0.0, "map": {}, "summary": {}}
+_KDA_LOCK = threading.Lock()
+
+
+def _get_proxy_kda_map(
+    ttl_seconds: float = 15.0,
+) -> tuple[dict[int, dict], dict[str, object]]:
+    global _KDA_CACHE
+    now = time.time()
+    with _KDA_LOCK:
+        if now < float(_KDA_CACHE.get("expires_at", 0)):
+            return _KDA_CACHE["map"], _KDA_CACHE["summary"]  # type: ignore
+
+    re_bind = re.compile(
+        r"\[(W\d+)\]\s+\[\*\]\s+(?:绑定代理|下号代理):\s+(?:[a-zA-Z0-9]+)://127\.0\.0\.1:(\d+)"
+    )
+    re_bad_exit = re.compile(
+        r"\[(W\d+)\]\s+\[\*\]\s+跳过坏出口，换代理(?:\s+#\d+)?:\s+(?:[a-zA-Z0-9]+)://127\.0\.0\.1:(\d+)"
+    )
+    re_healthy = re.compile(r"\[(W\d+)\]\s+\[CPA\]\s+✅\s+降智测试:\s+healthy")
+    re_degraded = re.compile(
+        r"\[(W\d+)\]\s+\[CPA\]\s+(?:❌|⚠️)\s+降智测试:\s+(?:hard|burst|error)"
+    )
+    re_fail = re.compile(
+        r"\[(W\d+)\]\s+(?:\[-\]\s+失败|\[!\]\s+.*?(?:换口重试|同槽位换口))"
+    )
+
+    kda: dict[int, dict] = {}
+    worker_proxy: dict[str, int] = {}
+    log_pattern = str(ROOT / "log" / "batch-orch-*.log")
+    log_files = sorted(glob.glob(log_pattern))
+
+    for lf in log_files:
+        worker_proxy.clear()
+        try:
+            with open(lf, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    m = re_bad_exit.search(line)
+                    if m:
+                        w, new_port = m.group(1), int(m.group(2))
+                        old_port = worker_proxy.get(w)
+                        if old_port:
+                            s = kda.setdefault(
+                                old_port, {"kills": 0, "deaths": 0, "assists": 0}
+                            )
+                            s["deaths"] += 1
+                        worker_proxy[w] = new_port
+                        continue
+
+                    m = re_bind.search(line)
+                    if m:
+                        w, port = m.group(1), int(m.group(2))
+                        worker_proxy[w] = port
+                        continue
+
+                    m = re_healthy.search(line)
+                    if m:
+                        w = m.group(1)
+                        port = worker_proxy.get(w)
+                        if port:
+                            s = kda.setdefault(
+                                port, {"kills": 0, "deaths": 0, "assists": 0}
+                            )
+                            s["kills"] += 1
+                        continue
+
+                    m = re_degraded.search(line)
+                    if m:
+                        w = m.group(1)
+                        port = worker_proxy.get(w)
+                        if port:
+                            s = kda.setdefault(
+                                port, {"kills": 0, "deaths": 0, "assists": 0}
+                            )
+                            s["deaths"] += 1
+                        continue
+
+                    m = re_fail.search(line)
+                    if m:
+                        w = m.group(1)
+                        port = worker_proxy.get(w)
+                        if port:
+                            s = kda.setdefault(
+                                port, {"kills": 0, "deaths": 0, "assists": 0}
+                            )
+                            s["deaths"] += 1
+                        continue
+        except Exception:
+            continue
+
+    total_k = 0
+    total_d = 0
+    for p, stats in kda.items():
+        k = stats["kills"]
+        d = stats["deaths"]
+        total_k += k
+        total_d += d
+        tot = k + d
+        stats["assists"] = 0
+        stats["total_battles"] = tot
+        stats["win_rate"] = round((k / tot * 100), 1) if tot > 0 else 0.0
+
+    tot_all = total_k + total_d
+    summary = {
+        "total_kills": total_k,
+        "total_deaths": total_d,
+        "total_assists": 0,
+        "win_rate": round((total_k / tot_all * 100), 1) if tot_all > 0 else 0.0,
+    }
+
+    with _KDA_LOCK:
+        _KDA_CACHE = {"expires_at": now + ttl_seconds, "map": kda, "summary": summary}
+
+    return kda, summary
+
+
 def _default_state() -> dict:
     return {"version": 1, "items": [], "updated_at": _utc_now()}
 
@@ -364,6 +518,7 @@ def _normalize_item(raw: object) -> dict | None:
     return {
         "id": _proxy_id(url),
         "url": url,
+        "tag": _clean_text(raw.get("tag"), 64),
         "enabled": bool(raw.get("enabled", True)),
         "status": status,
         "exit_ip": _clean_text(raw.get("exit_ip"), 64),
@@ -455,18 +610,53 @@ def _legacy_info() -> dict:
     }
 
 
-def _public_item(item: dict, testing_ids: set[str], now: datetime) -> dict:
+def _public_item(
+    item: dict,
+    testing_ids: set[str],
+    now: datetime,
+    kda_map: dict[int, dict] | None = None,
+    meta_tags: dict[int, str] | None = None,
+) -> dict:
     cooldown_until = _parse_utc(item.get("cooldown_until"))
     remaining = 0
     if cooldown_until and cooldown_until > now:
         remaining = max(0, int((cooldown_until - now).total_seconds()))
     parsed = urlsplit(item["url"])
+    port = parsed.port
+
+    if meta_tags is None:
+        meta_tags = _get_proxy_meta_tags()
+    tag = item.get("tag") or (meta_tags.get(port) if port else "") or ""
+
+    if kda_map is None:
+        kda_map, _ = _get_proxy_kda_map()
+    kda_info = (kda_map.get(port) if port else None) or {
+        "kills": 0,
+        "deaths": 0,
+        "assists": 0,
+        "win_rate": 0.0,
+        "total_battles": 0,
+    }
+
+    kills = kda_info["kills"]
+    deaths = kda_info["deaths"]
+    assists = 0
+    total_battles = kda_info["total_battles"]
+    win_rate = kda_info["win_rate"]
+
     return {
         "id": item["id"],
         "display_url": redact_proxy(item["url"]),
         "scheme": parsed.scheme,
         "host": parsed.hostname or "",
-        "port": parsed.port,
+        "port": port,
+        "tag": tag,
+        "kills": kills,
+        "deaths": deaths,
+        "assists": assists,
+        "kda": f"{kills}/{deaths}/{assists}",
+        "win_rate": win_rate,
+        "total_battles": total_battles,
         "has_auth": parsed.username is not None,
         "enabled": item["enabled"],
         "status": "testing" if item["id"] in testing_ids else item["status"],
@@ -505,7 +695,12 @@ def read_proxy_pool() -> dict:
     job = proxy_test_status()
     testing_ids = set(job.get("testing_ids") or [])
     now = datetime.now(timezone.utc)
-    items = [_public_item(item, testing_ids, now) for item in state["items"]]
+    meta_tags = _get_proxy_meta_tags()
+    kda_map, kda_summary = _get_proxy_kda_map()
+    items = [
+        _public_item(item, testing_ids, now, kda_map=kda_map, meta_tags=meta_tags)
+        for item in state["items"]
+    ]
     summary = {
         "total": len(items),
         "enabled": sum(1 for item in items if item["enabled"]),
@@ -518,6 +713,11 @@ def read_proxy_pool() -> dict:
             for item in items
             if item["enabled"] and item["stored_status"] == "healthy"
         ),
+        "total_kills": kda_summary.get("total_kills", 0),
+        "total_deaths": kda_summary.get("total_deaths", 0),
+        "total_assists": 0,
+        "win_rate": kda_summary.get("win_rate", 0.0),
+        "kda": f"{kda_summary.get('total_kills', 0)}/{kda_summary.get('total_deaths', 0)}/0",
     }
     try:
         mtime = STATE_PATH.stat().st_mtime

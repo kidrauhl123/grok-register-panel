@@ -1837,16 +1837,70 @@ HTML = r"""<!DOCTYPE html>
   .proxy-list-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
   .proxy-list-head h2 { margin: 0; font-size: 13px; }
   .proxy-table-wrap { overflow: auto; border: 1px solid var(--border); background: var(--surface-raised); }
-  .proxy-table { min-width: 990px; table-layout: fixed; }
-  .proxy-table th:nth-child(1) { width: 82px; }
-  .proxy-table th:nth-child(2) { width: 260px; }
-  .proxy-table th:nth-child(3) { width: 150px; }
-  .proxy-table th:nth-child(4) { width: 86px; }
-  .proxy-table th:nth-child(5) { width: 180px; }
-  .proxy-table th:nth-child(6) { width: 96px; }
-  .proxy-table th:nth-child(7) { width: 190px; }
+  .proxy-table { min-width: 1080px; table-layout: fixed; }
+  .proxy-table th:nth-child(1) { width: 78px; }
+  .proxy-table th:nth-child(2) { width: 250px; }
+  .proxy-table th:nth-child(3) { width: 125px; }
+  .proxy-table th:nth-child(4) { width: 140px; }
+  .proxy-table th:nth-child(5) { width: 80px; }
+  .proxy-table th:nth-child(6) { width: 175px; }
+  .proxy-table th:nth-child(7) { width: 68px; }
+  .proxy-table th:nth-child(8) { width: 140px; }
   .proxy-endpoint { overflow-wrap: anywhere; }
   .proxy-meta { margin-top: 3px; color: var(--muted); font-size: 10px; }
+  .proxy-tag {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .proxy-tag-none {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: normal;
+  }
+  .kda-box {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .kda-score {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    line-height: 1.2;
+  }
+  .kda-k { color: #10b981; }
+  .kda-d { color: #f43f5e; }
+  .kda-a { color: var(--muted); }
+  .kda-sep { color: var(--border-strong, #475569); margin: 0 1px; font-weight: normal; }
+  .kda-meta {
+    font-size: 10px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .kda-badge {
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .kda-badge.mvp {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .kda-badge.feeder {
+    background: rgba(244, 63, 94, 0.15);
+    color: #f43f5e;
+    border: 1px solid rgba(244, 63, 94, 0.3);
+  }
   .proxy-state {
     min-height: 24px;
     display: inline-flex;
@@ -2661,8 +2715,8 @@ HTML = r"""<!DOCTYPE html>
         </div>
         <div class="proxy-table-wrap">
           <table class="proxy-table">
-            <thead><tr><th>状态</th><th>代理端点</th><th>出口 / ASN</th><th>延迟</th><th>最近状态</th><th>启用</th><th>操作</th></tr></thead>
-            <tbody id="proxy-body"><tr><td colspan="7" class="proxy-empty">正在读取代理池</td></tr></tbody>
+            <thead><tr><th>状态</th><th>节点名称 / 代理端点</th><th>战绩 (K/D/A)</th><th>出口 / ASN</th><th>延迟</th><th>最近状态</th><th>启用</th><th>操作</th></tr></thead>
+            <tbody id="proxy-body"><tr><td colspan="8" class="proxy-empty">正在读取代理池</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3317,6 +3371,8 @@ function renderProxyPool(data) {
   const values = [
     ["总数", summary.total ?? 0, ""],
     ["可用", summary.usable ?? 0, "ok"],
+    ["总战绩", `${summary.total_kills ?? 0} / ${summary.total_deaths ?? 0} / 0`, "ok"],
+    ["总胜率", (summary.win_rate != null ? summary.win_rate + "%" : "--"), ""],
     ["异常", summary.unhealthy ?? 0, (summary.unhealthy || 0) > 0 ? "fail" : ""],
     ["冷却", summary.cooldown ?? 0, (summary.cooldown || 0) > 0 ? "warn" : ""],
     ["未检测", summary.unknown ?? 0, (summary.unknown || 0) > 0 ? "accent" : ""],
@@ -3342,6 +3398,31 @@ function renderProxyPool(data) {
   document.getElementById("proxy-body").innerHTML = items.length ? items.map(item => {
     const status = item.status || "unknown";
     const stateClass = ["healthy", "unhealthy", "cooldown", "testing"].includes(status) ? status : "";
+    const tagHtml = item.tag ? `<div class="proxy-tag" title="${esc(item.tag)}">${esc(item.tag)}</div>` : `<div class="proxy-tag proxy-tag-none">未命名节点</div>`;
+    const battles = Number(item.total_battles || 0);
+    const winRate = Number(item.win_rate || 0);
+    let badgeHtml = "";
+    if (battles >= 3) {
+      if (winRate >= 60) badgeHtml = `<span class="kda-badge mvp">胜率 ${winRate}%</span>`;
+      else if (winRate <= 25) badgeHtml = `<span class="kda-badge feeder">胜率 ${winRate}%</span>`;
+      else badgeHtml = `胜率 ${winRate}%`;
+    } else if (battles > 0) {
+      badgeHtml = `胜率 ${winRate}%`;
+    } else {
+      badgeHtml = `未出战`;
+    }
+
+    const kdaHtml = `<div class="kda-box">
+      <div class="kda-score mono">
+        <span class="kda-k" title="击杀 (正常满血)">${item.kills ?? 0}</span>
+        <span class="kda-sep">/</span>
+        <span class="kda-d" title="阵亡 (流程失败+降智)">${item.deaths ?? 0}</span>
+        <span class="kda-sep">/</span>
+        <span class="kda-a" title="助攻">${item.assists ?? 0}</span>
+      </div>
+      <div class="kda-meta">${badgeHtml} · ${battles}战</div>
+    </div>`;
+
     const exit = item.exit_ip ? esc(item.exit_ip) : "--";
     const asn = item.asn ? ("AS" + esc(item.asn)) : "--";
     const org = item.asn_org ? `<div class="proxy-meta">${esc(item.asn_org)}</div>` : "";
@@ -3351,14 +3432,15 @@ function renderProxyPool(data) {
     const count = (item.failure_count || 0) > 0 ? `<div class="proxy-meta">失败 ${esc(item.failure_count)} / 风控 ${esc(item.risk_count || 0)}</div>` : "";
     return `<tr>
       <td><span class="proxy-state ${stateClass}">${esc(proxyStatusLabel(status))}</span></td>
-      <td><div class="mono proxy-endpoint">${esc(item.display_url || "")}</div><div class="proxy-meta">${item.has_auth ? "凭据已隐藏" : "无鉴权"} / ${esc(item.source || "panel")}</div></td>
+      <td>${tagHtml}<div class="mono proxy-endpoint">${esc(item.display_url || "")}</div><div class="proxy-meta">${item.has_auth ? "凭据已隐藏" : "无鉴权"} / ${esc(item.source || "panel")}</div></td>
+      <td>${kdaHtml}</td>
       <td><div class="mono">${exit}</div><div class="proxy-meta mono">${asn}</div>${org}</td>
       <td class="mono">${latency}</td>
       <td title="${esc(item.last_error || "")}">${esc(detail)}${count}</td>
       <td><input class="proxy-toggle" type="checkbox" aria-label="启用 ${esc(item.display_url || "代理")}" ${item.enabled ? "checked" : ""} onchange="setProxyEnabled('${item.id}', this.checked)"/></td>
       <td><div class="proxy-actions"><button ${status === "testing" ? "disabled" : ""} onclick="testProxies('${item.id}')">检测</button><button class="danger" onclick="deleteProxyItem('${item.id}')">删除</button></div></td>
     </tr>`;
-  }).join("") : '<tr><td colspan="7" class="proxy-empty">代理池为空，可在上方导入单条或批量代理</td></tr>';
+  }).join("") : '<tr><td colspan="8" class="proxy-empty">代理池为空，可在上方导入单条或批量代理</td></tr>';
 }
 async function refreshProxies(authHelp = false) {
   try {
