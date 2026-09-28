@@ -385,18 +385,32 @@ def _get_proxy_kda_map(
         if now < float(_KDA_CACHE.get("expires_at", 0)):
             return _KDA_CACHE["map"], _KDA_CACHE["summary"]  # type: ignore
 
+    def _extract_port(raw: str) -> int | None:
+        if not raw:
+            return None
+        try:
+            parsed = urlsplit(raw)
+            if parsed.port:
+                return parsed.port
+        except Exception:
+            pass
+        m = re.search(r":(\d+)", raw)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+        return None
+
     re_bind = re.compile(
-        r"\[(W\d+)\]\s+\[\*\]\s+(?:绑定代理|下号代理):\s+(?:[a-zA-Z0-9]+)://127\.0\.0\.1:(\d+)"
+        r"\[(W\d+)\]\s+\[\*\]\s+(?:绑定代理|下号代理):\s+(\S+)"
     )
     re_bad_exit = re.compile(
-        r"\[(W\d+)\]\s+\[\*\]\s+跳过坏出口，换代理(?:\s+#\d+)?:\s+(?:[a-zA-Z0-9]+)://127\.0\.0\.1:(\d+)"
+        r"\[(W\d+)\]\s+\[\*\]\s+跳过坏出口，换代理(?:\s+#\d+)?:\s+(\S+)"
     )
     re_healthy = re.compile(r"\[(W\d+)\]\s+\[CPA\]\s+✅\s+降智测试:\s+healthy")
     re_degraded = re.compile(
         r"\[(W\d+)\]\s+\[CPA\]\s+(?:❌|⚠️)\s+降智测试:\s+(?:hard|burst|error)"
-    )
-    re_fail = re.compile(
-        r"\[(W\d+)\]\s+(?:\[-\]\s+失败|\[!\]\s+.*?(?:换口重试|同槽位换口))"
     )
 
     kda: dict[int, dict] = {}
@@ -411,20 +425,18 @@ def _get_proxy_kda_map(
                 for line in f:
                     m = re_bad_exit.search(line)
                     if m:
-                        w, new_port = m.group(1), int(m.group(2))
-                        old_port = worker_proxy.get(w)
-                        if old_port:
-                            s = kda.setdefault(
-                                old_port, {"kills": 0, "deaths": 0, "assists": 0}
-                            )
-                            s["deaths"] += 1
-                        worker_proxy[w] = new_port
+                        w, raw_px = m.group(1), m.group(2)
+                        new_port = _extract_port(raw_px)
+                        if new_port:
+                            worker_proxy[w] = new_port
                         continue
 
                     m = re_bind.search(line)
                     if m:
-                        w, port = m.group(1), int(m.group(2))
-                        worker_proxy[w] = port
+                        w, raw_px = m.group(1), m.group(2)
+                        port = _extract_port(raw_px)
+                        if port:
+                            worker_proxy[w] = port
                         continue
 
                     m = re_healthy.search(line)
@@ -439,17 +451,6 @@ def _get_proxy_kda_map(
                         continue
 
                     m = re_degraded.search(line)
-                    if m:
-                        w = m.group(1)
-                        port = worker_proxy.get(w)
-                        if port:
-                            s = kda.setdefault(
-                                port, {"kills": 0, "deaths": 0, "assists": 0}
-                            )
-                            s["deaths"] += 1
-                        continue
-
-                    m = re_fail.search(line)
                     if m:
                         w = m.group(1)
                         port = worker_proxy.get(w)
@@ -488,6 +489,160 @@ def _get_proxy_kda_map(
     return kda, summary
 
 
+def extract_proxy_multiplier(text: str) -> float:
+    """从节点名称或标签中提取流量倍率，未标注则默认为 1.0x。"""
+    if not text:
+        return 1.0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[xX倍]", text)
+    if m:
+        try:
+            val = float(m.group(1))
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return 1.0
+
+
+def compute_proxy_score(
+    *,
+    status: str,
+    kills: int = 0,
+    deaths: int = 0,
+    total_battles: int = 0,
+    win_rate: float = 0.0,
+    multiplier: float = 1.0,
+    latency_ms: int | float | None = None,
+    enabled: bool = True,
+) -> float:
+    """计算单个代理节点的综合评分。
+
+    综合考虑:
+    1. 战绩为核心决定项: 击杀多 (+15/次), 死亡少 (-35/次)
+    2. 胜率与场次加成: 胜率最高 +20, 场次最高 +10
+    3. 倍率权重: 越低越好 (1x 得 +15分, 2x 得 +11.5分, 3x 得 +8分, 5x 得 +1分, 10x 扣 -16.5分)
+    4. 降低网络延迟权重: 仅作为轻度微调 (0~5分)，绝不喧宾夺主
+    5. 基础状态分: healthy: +20, testing: +15, unknown: +5, cooldown: -25, unhealthy: -60
+    6. 禁用惩罚: -200 分 (沉底)
+    """
+    status_weights = {
+        "healthy": 20.0,
+        "testing": 15.0,
+        "unknown": 5.0,
+        "cooldown": -25.0,
+        "unhealthy": -60.0,
+    }
+    score = status_weights.get(status, 0.0)
+
+    # 1. 核心战绩: 击杀多、死亡少
+    score += kills * 15.0
+    score -= deaths * 35.0
+
+    # 2. 胜率与实战经验加成
+    if total_battles > 0:
+        score += (win_rate / 100.0) * 20.0
+        score += min(10.0, total_battles * 0.5)
+
+    # 3. 倍率权重: 越低越好 (以 1.0x 为基准 +15分，每增 1x 扣 3.5分)
+    mult = max(0.1, float(multiplier or 1.0))
+    mult_pts = round(15.0 - (mult - 1.0) * 3.5, 1)
+    score += mult_pts
+
+    # 4. 降低延迟权重: 0 ~ 5 分轻度调节
+    if latency_ms is not None and isinstance(latency_ms, (int, float)) and latency_ms > 0:
+        score += max(0.0, min(5.0, 5.0 - (latency_ms / 1000.0)))
+    elif status == "healthy":
+        score += 2.5
+
+    # 5. 禁用惩罚
+    if not enabled:
+        score -= 200.0
+
+    return round(score, 1)
+
+
+def sort_proxy_items(items: list[dict], sort_by: str | None = None) -> list[dict]:
+    mode = str(sort_by or "").strip().lower()
+    if not mode or mode in ("default", "none"):
+        return list(items)
+
+    if mode == "score":
+        return sorted(
+            items,
+            key=lambda x: (
+                x.get("score") if x.get("score") is not None else -9999.0,
+                x.get("kills") or 0,
+                -(x.get("port") or 99999),
+            ),
+            reverse=True,
+        )
+    elif mode in ("kda", "net_kills"):
+        return sorted(
+            items,
+            key=lambda x: (
+                (x.get("kills") or 0) - (x.get("deaths") or 0),
+                x.get("kills") or 0,
+                x.get("win_rate") or 0.0,
+            ),
+            reverse=True,
+        )
+    elif mode == "winrate":
+        return sorted(
+            items,
+            key=lambda x: (
+                x.get("win_rate") or 0.0,
+                x.get("total_battles") or 0,
+                x.get("kills") or 0,
+            ),
+            reverse=True,
+        )
+    elif mode == "kills":
+        return sorted(
+            items,
+            key=lambda x: (
+                x.get("kills") or 0,
+                -(x.get("deaths") or 0),
+                x.get("total_battles") or 0,
+            ),
+            reverse=True,
+        )
+    elif mode == "battles":
+        return sorted(
+            items,
+            key=lambda x: (
+                x.get("total_battles") or 0,
+                x.get("kills") or 0,
+            ),
+            reverse=True,
+        )
+    elif mode in ("multiplier", "mult"):
+        return sorted(
+            items,
+            key=lambda x: (
+                x.get("multiplier") if x.get("multiplier") is not None else 1.0,
+                -(x.get("score") if x.get("score") is not None else -9999.0),
+            ),
+        )
+    elif mode == "latency":
+        return sorted(
+            items,
+            key=lambda x: (
+                x.get("latency_ms") if x.get("latency_ms") is not None and x.get("latency_ms") > 0 else 999999.0,
+                -(x.get("score") if x.get("score") is not None else -9999.0),
+            ),
+        )
+    elif mode == "status":
+        order = {"healthy": 1, "testing": 2, "unknown": 3, "cooldown": 4, "unhealthy": 5}
+        return sorted(
+            items,
+            key=lambda x: (
+                order.get(x.get("status") or x.get("stored_status"), 9),
+                -(x.get("score") if x.get("score") is not None else -9999.0),
+            ),
+        )
+    return list(items)
+
+
 def _default_state() -> dict:
     return {"version": 1, "items": [], "updated_at": _utc_now()}
 
@@ -515,10 +670,18 @@ def _normalize_item(raw: object) -> dict | None:
     except (TypeError, ValueError):
         latency = None
     created_at = str(raw.get("created_at") or "").strip() or _utc_now()
+    tag = _clean_text(raw.get("tag"), 64)
+    if not tag:
+        try:
+            frag = unquote(urlsplit(url).fragment).strip()
+            if frag:
+                tag = _clean_text(frag, 64)
+        except Exception:
+            pass
     return {
         "id": _proxy_id(url),
         "url": url,
-        "tag": _clean_text(raw.get("tag"), 64),
+        "tag": tag,
         "enabled": bool(raw.get("enabled", True)),
         "status": status,
         "exit_ip": _clean_text(raw.get("exit_ip"), 64),
@@ -627,6 +790,13 @@ def _public_item(
     if meta_tags is None:
         meta_tags = _get_proxy_meta_tags()
     tag = item.get("tag") or (meta_tags.get(port) if port else "") or ""
+    if not tag and parsed.fragment:
+        try:
+            frag = unquote(parsed.fragment).strip()
+            if frag:
+                tag = _clean_text(frag, 64)
+        except Exception:
+            pass
 
     if kda_map is None:
         kda_map, _ = _get_proxy_kda_map()
@@ -643,6 +813,17 @@ def _public_item(
     assists = 0
     total_battles = kda_info["total_battles"]
     win_rate = kda_info["win_rate"]
+    multiplier = extract_proxy_multiplier(tag)
+    score = compute_proxy_score(
+        status=item["status"],
+        kills=kills,
+        deaths=deaths,
+        total_battles=total_battles,
+        win_rate=win_rate,
+        multiplier=multiplier,
+        latency_ms=item.get("latency_ms"),
+        enabled=item.get("enabled", True),
+    )
 
     return {
         "id": item["id"],
@@ -651,12 +832,14 @@ def _public_item(
         "host": parsed.hostname or "",
         "port": port,
         "tag": tag,
+        "multiplier": multiplier,
         "kills": kills,
         "deaths": deaths,
         "assists": assists,
         "kda": f"{kills}/{deaths}/{assists}",
         "win_rate": win_rate,
         "total_battles": total_battles,
+        "score": score,
         "has_auth": parsed.username is not None,
         "enabled": item["enabled"],
         "status": "testing" if item["id"] in testing_ids else item["status"],
@@ -687,7 +870,7 @@ def proxy_test_status() -> dict:
         }
 
 
-def read_proxy_pool() -> dict:
+def read_proxy_pool(sort: str | None = None) -> dict:
     with exclusive_file_lock(LOCK_PATH):
         state, errors = _read_unlocked()
         if _release_expired_cooldowns(state):
@@ -719,6 +902,8 @@ def read_proxy_pool() -> dict:
         "win_rate": kda_summary.get("win_rate", 0.0),
         "kda": f"{kda_summary.get('total_kills', 0)}/{kda_summary.get('total_deaths', 0)}/0",
     }
+    if sort:
+        items = sort_proxy_items(items, sort)
     try:
         mtime = STATE_PATH.stat().st_mtime
     except OSError:

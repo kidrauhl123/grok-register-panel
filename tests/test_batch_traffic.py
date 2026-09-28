@@ -228,6 +228,11 @@ def test_proxy_traffic_multiplier_weighting():
     assert batch_traffic.resolve_proxy_multiplier("socks5h://127.0.0.1:21001") == 1.0
     assert batch_traffic.resolve_proxy_multiplier("socks5h://127.0.0.1:21005") == 5.0
     assert batch_traffic.resolve_proxy_multiplier("socks5h://127.0.0.1:21010") == 10.0
+    assert batch_traffic.resolve_proxy_multiplier("ss://user:pass@1.2.3.4:1000#%E6%97%A5%E6%9C%AC%E6%98%9F%E9%93%BEB4%202x") == 2.0
+    assert batch_traffic.resolve_proxy_multiplier("ss://user:pass@1.2.3.4:1000#%E6%97%A5%E6%9C%AC%E6%98%9F%E9%93%BED5%20%5B10.0%5D") == 10.0
+    assert batch_traffic.resolve_proxy_multiplier("ss://user:pass@1.2.3.4:1000#%E6%97%A5%E6%9C%AC%E5%AE%BD%E9%A2%91D4%20%5B3%5D") == 3.0
+    assert batch_traffic.resolve_proxy_multiplier("ss://user:pass@1.2.3.4:1000#%E9%A6%99%E6%B8%AF%E4%BC%98%E5%8C%961%20%5B0.5%5D") == 0.5
+    assert batch_traffic.resolve_proxy_multiplier("ss://user:pass@1.2.3.4:1000#%E9%9F%A9%E5%9B%BD%E5%AE%BD%E9%A2%91D1") == 1.0
 
     upstream = FakeUpstream(("127.0.0.1", 0), FakeUpstreamHandler)
     upstream.requests = []

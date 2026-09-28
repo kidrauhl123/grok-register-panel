@@ -59,42 +59,77 @@ def get_status() -> dict:
     return {"running": False, "monitor_alive": False, "tunnel_alive": False}
 
 
-def stop_service():
+def _kill_pid(pid: int, timeout: float = 3.0):
+    if not is_pid_running(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if not is_pid_running(pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def stop_service(port: int = DEFAULT_PORT):
     st = get_status()
     m_pid = st.get("monitor_pid")
     t_pid = st.get("tunnel_pid")
     stopped = []
 
     if t_pid and is_pid_running(t_pid):
-        try:
-            os.kill(t_pid, signal.SIGTERM)
-            stopped.append(f"cloudflared (PID {t_pid})")
-        except OSError:
-            pass
+        _kill_pid(t_pid)
+        stopped.append(f"cloudflared (PID {t_pid})")
 
     if m_pid and is_pid_running(m_pid):
-        try:
-            os.kill(m_pid, signal.SIGTERM)
-            stopped.append(f"monitor.py (PID {m_pid})")
-        except OSError:
-            pass
+        _kill_pid(m_pid)
+        stopped.append(f"monitor.py (PID {m_pid})")
 
     # Also clean up any orphan cloudflared tunnels pointing to our port
     try:
         res = subprocess.run(
-            ["pgrep", "-f", f"cloudflared.*{DEFAULT_PORT}"],
+            ["pgrep", "-f", f"cloudflared.*{port}"],
             capture_output=True,
             text=True,
         )
         for line in res.stdout.splitlines():
             pid = int(line.strip())
-            if pid != os.getpid():
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except OSError:
-                    pass
+            if pid != os.getpid() and is_pid_running(pid):
+                _kill_pid(pid)
+                stopped.append(f"orphan cloudflared (PID {pid})")
     except Exception:
         pass
+
+    # Clean up any orphan monitor.py processes
+    try:
+        res = subprocess.run(
+            ["pgrep", "-f", "webui/monitor.py"],
+            capture_output=True,
+            text=True,
+        )
+        for line in res.stdout.splitlines():
+            pid = int(line.strip())
+            if pid != os.getpid() and is_pid_running(pid):
+                _kill_pid(pid)
+                stopped.append(f"orphan monitor.py (PID {pid})")
+    except Exception:
+        pass
+
+    # Wait until port is actually free
+    for _ in range(30):
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+                break
+        except OSError:
+            time.sleep(0.2)
 
     if STATUS_FILE.is_file():
         try:
@@ -113,7 +148,7 @@ def start_service(port: int = DEFAULT_PORT, token: str = DEFAULT_TOKEN, daemon: 
         print(f"[*] Access Token: {st.get('token')}")
         return st
 
-    stop_service()
+    stop_service(port=port)
 
     # 1. Start monitor.py
     display = _detect_display()
@@ -160,6 +195,7 @@ def start_service(port: int = DEFAULT_PORT, token: str = DEFAULT_TOKEN, daemon: 
         return None
 
     # 2. Start cloudflared tunnel
+    log_offset = TUNNEL_LOG.stat().st_size if TUNNEL_LOG.is_file() else 0
     t_log_f = open(TUNNEL_LOG, "a", encoding="utf-8")
     t_proc = subprocess.Popen(
         ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
@@ -170,21 +206,26 @@ def start_service(port: int = DEFAULT_PORT, token: str = DEFAULT_TOKEN, daemon: 
     )
     print(f"[*] Started cloudflared tunnel (PID {t_proc.pid})")
 
-    # Read tunnel URL from log file
+    # Read tunnel URL from log file (only newly appended content)
     tunnel_url = None
     start_t = time.time()
-    while time.time() - start_t < 20:
+    while time.time() - start_t < 25:
         time.sleep(0.5)
         if not is_pid_running(t_proc.pid):
             print("[-] cloudflared exited unexpectedly. Check log/cloudflared.log")
             m_proc.terminate()
             return None
         if TUNNEL_LOG.is_file():
-            content = TUNNEL_LOG.read_text(encoding="utf-8", errors="replace")
-            matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", content)
-            if matches:
-                tunnel_url = matches[-1]
-                break
+            try:
+                with open(TUNNEL_LOG, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(log_offset)
+                    new_content = f.read()
+                matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", new_content)
+                if matches:
+                    tunnel_url = matches[-1]
+                    break
+            except Exception:
+                pass
 
     if not tunnel_url:
         print("[-] Timeout waiting for tryCloudflare URL. Check log/cloudflared.log")

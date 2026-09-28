@@ -353,6 +353,37 @@ _MULTIPLIER_CACHE: dict[str, float] = {}
 _MULTIPLIER_LOCK = threading.Lock()
 
 
+def extract_proxy_multiplier(text: object) -> float | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    # If it is a full URL, inspect fragment first to avoid false matches in base64 credentials
+    if "://" in raw:
+        try:
+            parsed = urlsplit(raw)
+            raw = parsed.fragment or parsed.query or ""
+        except Exception:
+            pass
+    raw = unquote(raw).strip()
+    if not raw:
+        return None
+    # 1. Bracket format: [0.5], [2.0], [3], [10.0]
+    m_bracket = re.search(r"\[\s*(\d+(?:\.\d+)?)\s*\]", raw)
+    if m_bracket:
+        try:
+            return float(m_bracket.group(1))
+        except ValueError:
+            pass
+    # 2. X format: 1.5x, 2x, 10x, 0.5X
+    m_x = re.search(r"(\d+(?:\.\d+)?)\s*x", raw, re.IGNORECASE)
+    if m_x:
+        try:
+            return float(m_x.group(1))
+        except ValueError:
+            pass
+    return None
+
+
 def resolve_proxy_multiplier(proxy_url: object) -> float:
     text = str(proxy_url or "").strip()
     if not text:
@@ -360,6 +391,12 @@ def resolve_proxy_multiplier(proxy_url: object) -> float:
     with _MULTIPLIER_LOCK:
         if text in _MULTIPLIER_CACHE:
             return _MULTIPLIER_CACHE[text]
+
+    direct = extract_proxy_multiplier(text)
+    if direct is not None:
+        with _MULTIPLIER_LOCK:
+            _MULTIPLIER_CACHE[text] = direct
+        return direct
 
     mult = 1.0
     try:
@@ -377,10 +414,9 @@ def resolve_proxy_multiplier(proxy_url: object) -> float:
                 if isinstance(meta, list):
                     for item in meta:
                         if isinstance(item, dict) and item.get("port") == port:
-                            tag = str(item.get("tag") or "")
-                            m = re.search(r"(\d+(?:\.\d+)?)x", tag, re.IGNORECASE)
-                            if m:
-                                mult = float(m.group(1))
+                            m = extract_proxy_multiplier(item.get("tag")) or extract_proxy_multiplier(item.get("name"))
+                            if m is not None:
+                                mult = m
                                 with _MULTIPLIER_LOCK:
                                     _MULTIPLIER_CACHE[text] = mult
                                 return mult
@@ -398,10 +434,9 @@ def resolve_proxy_multiplier(proxy_url: object) -> float:
                         item_url = item.get("url", "")
                         item_port = urlsplit(item_url).port if item_url else None
                         if item_url == text or (port and item_port == port):
-                            tag = str(item.get("tag") or "")
-                            m = re.search(r"(\d+(?:\.\d+)?)x", tag, re.IGNORECASE)
-                            if m:
-                                mult = float(m.group(1))
+                            m = extract_proxy_multiplier(item.get("tag")) or extract_proxy_multiplier(item_url)
+                            if m is not None:
+                                mult = m
                                 with _MULTIPLIER_LOCK:
                                     _MULTIPLIER_CACHE[text] = mult
                                 return mult

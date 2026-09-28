@@ -1836,16 +1836,46 @@ HTML = r"""<!DOCTYPE html>
   .proxy-list-section { margin-top: 18px; }
   .proxy-list-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
   .proxy-list-head h2 { margin: 0; font-size: 13px; }
+  .proxy-list-toolbar { display: flex; align-items: center; gap: 12px; }
+  .proxy-sort-control { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .proxy-sort-control label { font-size: 11px; color: var(--muted); white-space: nowrap; cursor: default; }
+  .proxy-sort-control select {
+    min-height: 28px;
+    padding: 2px 8px;
+    font-size: 12px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .proxy-sort-control select:hover { border-color: var(--border-strong, #64748b); }
+  .proxy-sort-control select:focus { outline: none; border-color: var(--accent); }
   .proxy-table-wrap { overflow: auto; border: 1px solid var(--border); background: var(--surface-raised); }
-  .proxy-table { min-width: 1080px; table-layout: fixed; }
+  .proxy-table { min-width: 1120px; table-layout: fixed; }
+  .proxy-table th.sortable { cursor: pointer; user-select: none; transition: background 0.15s ease, color 0.15s ease; }
+  .proxy-table th.sortable:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+  .sort-indicator { display: inline-block; font-size: 9px; margin-left: 2px; color: var(--accent, #38bdf8); }
   .proxy-table th:nth-child(1) { width: 78px; }
-  .proxy-table th:nth-child(2) { width: 250px; }
-  .proxy-table th:nth-child(3) { width: 125px; }
-  .proxy-table th:nth-child(4) { width: 140px; }
-  .proxy-table th:nth-child(5) { width: 80px; }
-  .proxy-table th:nth-child(6) { width: 175px; }
-  .proxy-table th:nth-child(7) { width: 68px; }
-  .proxy-table th:nth-child(8) { width: 140px; }
+  .proxy-table th:nth-child(2) { width: 95px; }
+  .proxy-table th:nth-child(3) { width: 245px; }
+  .proxy-table th:nth-child(4) { width: 125px; }
+  .proxy-table th:nth-child(5) { width: 135px; }
+  .proxy-table th:nth-child(6) { width: 78px; }
+  .proxy-table th:nth-child(7) { width: 165px; }
+  .proxy-table th:nth-child(8) { width: 64px; }
+  .proxy-table th:nth-child(9) { width: 135px; }
+  .proxy-score-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .score-badge { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.3px; }
+  .score-badge.tier-sp { background: rgba(245, 158, 11, 0.18); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4); }
+  .score-badge.tier-s { background: rgba(16, 185, 129, 0.18); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); }
+  .score-badge.tier-a { background: rgba(56, 189, 248, 0.18); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); }
+  .score-badge.tier-b { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
+  .score-badge.tier-c { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); }
+  .score-badge.tier-d { background: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.3); }
+  .score-val { font-size: 13px; font-weight: 600; }
+  .score-val.pos { color: var(--text); }
+  .score-val.neg { color: #f43f5e; }
   .proxy-endpoint { overflow-wrap: anywhere; }
   .proxy-meta { margin-top: 3px; color: var(--muted); font-size: 10px; }
   .proxy-tag {
@@ -1861,6 +1891,45 @@ HTML = r"""<!DOCTYPE html>
     color: var(--muted);
     font-size: 11px;
     font-weight: normal;
+  }
+  .mult-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 2px;
+    margin-left: 5px;
+    letter-spacing: 0.2px;
+    vertical-align: middle;
+  }
+  .mult-badge.low { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+  .mult-badge.mid { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+  .mult-badge.high { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.3); }
+  .mult-badge.max { background: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.3); }
+  .mvp-crown-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.28), rgba(234, 179, 8, 0.18));
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.6);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
+    margin-right: 4px;
+    vertical-align: middle;
+    animation: mvp-glow 2s ease-in-out infinite alternate;
+  }
+  @keyframes mvp-glow {
+    from { box-shadow: 0 0 5px rgba(245, 158, 11, 0.25); }
+    to { box-shadow: 0 0 12px rgba(245, 158, 11, 0.55); }
+  }
+  tr.is-mvp-row {
+    background: linear-gradient(90deg, rgba(245, 158, 11, 0.05) 0%, transparent 70%);
   }
   .kda-box {
     display: flex;
@@ -2711,12 +2780,40 @@ HTML = r"""<!DOCTYPE html>
             <h2>代理明细</h2>
             <div class="proxy-job mono" id="proxy-test-status" role="status" aria-live="polite">未开始检测</div>
           </div>
-          <button id="proxy-test-all" onclick="testProxies()">检测全部</button>
+          <div class="proxy-list-toolbar">
+            <div class="proxy-sort-control">
+              <label for="proxy-sort-select">排序</label>
+              <select id="proxy-sort-select" onchange="changeProxySort(this.value)">
+                <option value="score">⚡ 综合评分最高 (战绩/倍率主导)</option>
+                <option value="kda">🏆 战绩最佳 (净胜)</option>
+                <option value="winrate">🎯 胜率最高</option>
+                <option value="kills">⚔️ 击杀最多</option>
+                <option value="multiplier">💰 倍率最低 (最省流量)</option>
+                <option value="battles">🔥 出战最多</option>
+                <option value="latency">⏱️ 延迟最低</option>
+                <option value="status">🟢 状态优先</option>
+                <option value="default">📋 默认配置顺序</option>
+              </select>
+            </div>
+            <button id="proxy-test-all" onclick="testProxies()">检测全部</button>
+          </div>
         </div>
         <div class="proxy-table-wrap">
           <table class="proxy-table">
-            <thead><tr><th>状态</th><th>节点名称 / 代理端点</th><th>战绩 (K/D/A)</th><th>出口 / ASN</th><th>延迟</th><th>最近状态</th><th>启用</th><th>操作</th></tr></thead>
-            <tbody id="proxy-body"><tr><td colspan="8" class="proxy-empty">正在读取代理池</td></tr></tbody>
+            <thead>
+              <tr>
+                <th class="sortable" onclick="setProxySortFromHeader('status')" title="点击按状态排序">状态 <span id="sort-indicator-status" class="sort-indicator"></span></th>
+                <th class="sortable" onclick="setProxySortFromHeader('score')" title="点击按综合评分排序">综合评分 <span id="sort-indicator-score" class="sort-indicator"></span></th>
+                <th>节点名称 / 代理端点</th>
+                <th class="sortable" onclick="setProxySortFromHeader('kda')" title="点击按战绩排序">战绩 (K/D/A) <span id="sort-indicator-kda" class="sort-indicator"></span></th>
+                <th>出口 / ASN</th>
+                <th class="sortable" onclick="setProxySortFromHeader('latency')" title="点击按延迟排序">延迟 <span id="sort-indicator-latency" class="sort-indicator"></span></th>
+                <th>最近状态</th>
+                <th>启用</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="proxy-body"><tr><td colspan="9" class="proxy-empty">正在读取代理池</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3365,6 +3462,71 @@ function cooldownText(item) {
   const value = seconds >= 3600 ? Math.ceil(seconds / 3600) + " 小时" : Math.ceil(seconds / 60) + " 分钟";
   return (item.cooldown_reason === "risk" ? "风控冷却 " : "网络冷却 ") + value;
 }
+let currentProxySort = (function() {
+  try { return localStorage.getItem("proxy_sort_mode") || "score"; } catch (e) { return "score"; }
+})();
+
+function getScoreTier(score) {
+  if (score >= 150) return { tier: "S+", cls: "tier-sp", label: "超神/殿堂" };
+  if (score >= 80) return { tier: "S", cls: "tier-s", label: "王牌主力" };
+  if (score >= 40) return { tier: "A", cls: "tier-a", label: "优质节点" };
+  if (score >= 10) return { tier: "B", cls: "tier-b", label: "常规可用" };
+  if (score >= 0) return { tier: "C", cls: "tier-c", label: "观察名单" };
+  return { tier: "D", cls: "tier-d", label: "风控异常" };
+}
+
+function getScoreTooltip(item, score) {
+  const tier = getScoreTier(score);
+  const kills = Number(item.kills || 0);
+  const deaths = Number(item.deaths || 0);
+  const battles = Number(item.total_battles || 0);
+  const wr = Number(item.win_rate || 0);
+  const mult = Number(item.multiplier || 1.0);
+  const multPts = Math.round((15.0 - (mult - 1.0) * 3.5) * 10) / 10;
+  const lat = item.latency_ms;
+  const status = item.stored_status || item.status || "unknown";
+  const statusPts = status === "healthy" ? 20 : (status === "unknown" ? 5 : (status === "cooldown" ? -25 : (status === "testing" ? 15 : -60)));
+  const lines = [
+    `综合评分: ${score.toFixed(1)} [${tier.tier} · ${tier.label}]`,
+    `• 击杀奖励 (核心): ${kills} 杀 (+${(kills * 15).toFixed(0)})`,
+    `• 阵亡惩罚 (核心): ${deaths} 亡 (-${(deaths * 35).toFixed(0)})`,
+    `• 流量倍率: ${mult}x (${multPts >= 0 ? "+" + multPts : multPts} 分，越低越好)`,
+  ];
+  if (battles > 0) {
+    lines.push(`• 胜率加成: ${wr}% (+${((wr / 100) * 20).toFixed(1)})`);
+    lines.push(`• 实战经验: ${battles} 战 (+${Math.min(10, battles * 0.5).toFixed(1)})`);
+  }
+  lines.push(`• 状态评分: ${proxyStatusLabel(status)} (${statusPts >= 0 ? "+" + statusPts : statusPts})`);
+  if (lat != null && lat > 0) {
+    const latBonus = Math.max(0, Math.min(5, 5 - (lat / 1000)));
+    lines.push(`• 延迟加成 (轻度): ${lat}ms (+${latBonus.toFixed(1)})`);
+  }
+  if (!item.enabled) {
+    lines.push(`• 禁用惩罚: 未启用 (-200)`);
+  }
+  return lines.join("\n");
+}
+
+function changeProxySort(val) {
+  currentProxySort = val || "score";
+  try { localStorage.setItem("proxy_sort_mode", currentProxySort); } catch (e) {}
+  if (proxyData) renderProxyPool(proxyData);
+}
+
+function setProxySortFromHeader(type) {
+  let target = "score";
+  if (type === "score") {
+    target = currentProxySort === "score" ? "default" : "score";
+  } else if (type === "kda") {
+    target = currentProxySort === "kda" ? "winrate" : "kda";
+  } else if (type === "latency") {
+    target = currentProxySort === "latency" ? "score" : "latency";
+  } else if (type === "status") {
+    target = currentProxySort === "status" ? "score" : "status";
+  }
+  changeProxySort(target);
+}
+
 function renderProxyPool(data) {
   proxyData = data || {};
   const summary = proxyData.summary || {};
@@ -3394,11 +3556,95 @@ function renderProxyPool(data) {
     ? ("检测中 " + (job.completed || 0) + "/" + (job.total || 0) + "，健康 " + (job.healthy || 0) + "，失败 " + (job.failed || 0))
     : (job.finished_at ? ("上次检测：健康 " + (job.healthy || 0) + "，失败 " + (job.failed || 0)) : "未开始检测");
 
-  const items = proxyData.items || [];
-  document.getElementById("proxy-body").innerHTML = items.length ? items.map(item => {
+  const sortSelect = document.getElementById("proxy-sort-select");
+  if (sortSelect && sortSelect.value !== currentProxySort) {
+    sortSelect.value = currentProxySort;
+  }
+  const indicators = {
+    score: document.getElementById("sort-indicator-score"),
+    kda: document.getElementById("sort-indicator-kda"),
+    latency: document.getElementById("sort-indicator-latency"),
+    status: document.getElementById("sort-indicator-status"),
+  };
+  Object.keys(indicators).forEach(k => {
+    if (indicators[k]) {
+      if (currentProxySort === k) {
+        indicators[k].textContent = (k === "latency" ? "▲" : "▼");
+      } else {
+        indicators[k].textContent = "";
+      }
+    }
+  });
+
+  let items = (proxyData.items || []).slice();
+  if (currentProxySort === "score") {
+    items.sort((a, b) => {
+      const sa = a.score != null ? a.score : -9999;
+      const sb = b.score != null ? b.score : -9999;
+      if (sb !== sa) return sb - sa;
+      return (b.kills || 0) - (a.kills || 0);
+    });
+  } else if (currentProxySort === "kda") {
+    items.sort((a, b) => {
+      const netA = (a.kills || 0) - (a.deaths || 0);
+      const netB = (b.kills || 0) - (b.deaths || 0);
+      if (netB !== netA) return netB - netA;
+      if ((b.kills || 0) !== (a.kills || 0)) return (b.kills || 0) - (a.kills || 0);
+      return (b.win_rate || 0) - (a.win_rate || 0);
+    });
+  } else if (currentProxySort === "winrate") {
+    items.sort((a, b) => {
+      const wa = a.win_rate || 0;
+      const wb = b.win_rate || 0;
+      if (wb !== wa) return wb - wa;
+      return (b.total_battles || 0) - (a.total_battles || 0);
+    });
+  } else if (currentProxySort === "kills") {
+    items.sort((a, b) => {
+      if ((b.kills || 0) !== (a.kills || 0)) return (b.kills || 0) - (a.kills || 0);
+      return (a.deaths || 0) - (b.deaths || 0);
+    });
+  } else if (currentProxySort === "battles") {
+    items.sort((a, b) => {
+      if ((b.total_battles || 0) !== (a.total_battles || 0)) return (b.total_battles || 0) - (a.total_battles || 0);
+      return (b.kills || 0) - (a.kills || 0);
+    });
+  } else if (currentProxySort === "multiplier") {
+    items.sort((a, b) => {
+      const ma = a.multiplier || 1.0;
+      const mb = b.multiplier || 1.0;
+      if (ma !== mb) return ma - mb;
+      return (b.score || 0) - (a.score || 0);
+    });
+  } else if (currentProxySort === "latency") {
+    items.sort((a, b) => {
+      const la = a.latency_ms != null && a.latency_ms > 0 ? a.latency_ms : 999999;
+      const lb = b.latency_ms != null && b.latency_ms > 0 ? b.latency_ms : 999999;
+      if (la !== lb) return la - lb;
+      return (b.score || 0) - (a.score || 0);
+    });
+  } else if (currentProxySort === "status") {
+    const order = { healthy: 1, testing: 2, unknown: 3, cooldown: 4, unhealthy: 5 };
+    items.sort((a, b) => {
+      const sa = order[a.status || a.stored_status] || 9;
+      const sb = order[b.status || b.stored_status] || 9;
+      if (sa !== sb) return sa - sb;
+      return (b.score || 0) - (a.score || 0);
+    });
+  }
+
+  document.getElementById("proxy-body").innerHTML = items.length ? items.map((item, idx) => {
     const status = item.status || "unknown";
     const stateClass = ["healthy", "unhealthy", "cooldown", "testing"].includes(status) ? status : "";
-    const tagHtml = item.tag ? `<div class="proxy-tag" title="${esc(item.tag)}">${esc(item.tag)}</div>` : `<div class="proxy-tag proxy-tag-none">未命名节点</div>`;
+    const isTopMvp = idx === 0 && ((item.score != null && item.score > 0) || (item.kills || 0) > 0);
+    const mvpBadge = isTopMvp ? '<span class="mvp-crown-badge" title="当前全场综合战力榜首 (MVP)">👑 MVP</span>' : '';
+    const mult = Number(item.multiplier || 1.0);
+    let multBadge = "";
+    if (mult > 5.0) multBadge = `<span class="mult-badge max" title="流量倍率 ${mult}x (高消耗)">${mult}x</span>`;
+    else if (mult > 3.0) multBadge = `<span class="mult-badge high" title="流量倍率 ${mult}x">${mult}x</span>`;
+    else if (mult > 1.0) multBadge = `<span class="mult-badge mid" title="流量倍率 ${mult}x">${mult}x</span>`;
+    else multBadge = `<span class="mult-badge low" title="流量倍率 1.0x (原价/优选)">1.0x</span>`;
+    const tagHtml = item.tag ? `<div class="proxy-tag" title="${esc(item.tag)}">${mvpBadge}${esc(item.tag)}${multBadge}</div>` : `<div class="proxy-tag proxy-tag-none">${mvpBadge}未命名节点${multBadge}</div>`;
     const battles = Number(item.total_battles || 0);
     const winRate = Number(item.win_rate || 0);
     let badgeHtml = "";
@@ -3412,11 +3658,21 @@ function renderProxyPool(data) {
       badgeHtml = `未出战`;
     }
 
+    const score = Number(item.score != null ? item.score : 0);
+    const tier = getScoreTier(score);
+    const scoreTip = getScoreTooltip(item, score);
+    const scoreValCls = score >= 0 ? "pos" : "neg";
+    const scoreHtml = `<div class="proxy-score-cell" title="${esc(scoreTip)}">
+      ${isTopMvp ? '<span class="mvp-crown-badge" title="当前榜首 MVP">👑 MVP</span>' : ''}
+      <span class="score-badge ${tier.cls}">${esc(tier.tier)}</span>
+      <span class="score-val mono ${scoreValCls}">${score.toFixed(1)}</span>
+    </div>`;
+
     const kdaHtml = `<div class="kda-box">
       <div class="kda-score mono">
         <span class="kda-k" title="击杀 (正常满血)">${item.kills ?? 0}</span>
         <span class="kda-sep">/</span>
-        <span class="kda-d" title="阵亡 (流程失败+降智)">${item.deaths ?? 0}</span>
+        <span class="kda-d" title="阵亡 (降智拦截)">${item.deaths ?? 0}</span>
         <span class="kda-sep">/</span>
         <span class="kda-a" title="助攻">${item.assists ?? 0}</span>
       </div>
@@ -3430,8 +3686,9 @@ function renderProxyPool(data) {
     const cooldown = cooldownText(item);
     const detail = cooldown || item.last_error || (item.last_checked_at ? ("检测 " + proxyTime(item.last_checked_at)) : "尚未检测");
     const count = (item.failure_count || 0) > 0 ? `<div class="proxy-meta">失败 ${esc(item.failure_count)} / 风控 ${esc(item.risk_count || 0)}</div>` : "";
-    return `<tr>
+    return `<tr class="${isTopMvp ? 'is-mvp-row' : ''}">
       <td><span class="proxy-state ${stateClass}">${esc(proxyStatusLabel(status))}</span></td>
+      <td>${scoreHtml}</td>
       <td>${tagHtml}<div class="mono proxy-endpoint">${esc(item.display_url || "")}</div><div class="proxy-meta">${item.has_auth ? "凭据已隐藏" : "无鉴权"} / ${esc(item.source || "panel")}</div></td>
       <td>${kdaHtml}</td>
       <td><div class="mono">${exit}</div><div class="proxy-meta mono">${asn}</div>${org}</td>
@@ -3440,7 +3697,7 @@ function renderProxyPool(data) {
       <td><input class="proxy-toggle" type="checkbox" aria-label="启用 ${esc(item.display_url || "代理")}" ${item.enabled ? "checked" : ""} onchange="setProxyEnabled('${item.id}', this.checked)"/></td>
       <td><div class="proxy-actions"><button ${status === "testing" ? "disabled" : ""} onclick="testProxies('${item.id}')">检测</button><button class="danger" onclick="deleteProxyItem('${item.id}')">删除</button></div></td>
     </tr>`;
-  }).join("") : '<tr><td colspan="8" class="proxy-empty">代理池为空，可在上方导入单条或批量代理</td></tr>';
+  }).join("") : '<tr><td colspan="9" class="proxy-empty">代理池为空，可在上方导入单条或批量代理</td></tr>';
 }
 async function refreshProxies(authHelp = false) {
   try {
@@ -5007,7 +5264,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/proxies":
             try:
-                self._json(200, read_proxy_pool())
+                from urllib.parse import parse_qs
+                sort_arg = parse_qs(u.query or "").get("sort", [None])[0]
+                self._json(200, read_proxy_pool(sort=sort_arg))
             except Exception as e:
                 self._json(500, {"ok": False, "error": redact_log_line(str(e))})
             return

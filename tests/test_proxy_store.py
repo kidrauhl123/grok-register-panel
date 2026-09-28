@@ -280,6 +280,106 @@ def test_async_probe_job_persists_health():
             proxy_store.probe_proxy = previous_probe
 
 
+def test_import_preserves_url_fragment_tag():
+    with IsolatedStore():
+        raw_ss = "ss://2022-blake3-aes-256-gcm:dGVzdA==@144.24.68.21:41808#%F0%9F%87%B0%F0%9F%87%B7%20%E9%9F%A9%E5%9B%BD%E5%AE%BD%E9%A2%91D1"
+        imported = proxy_store.import_proxies(raw_ss)
+        assert imported["ok"] is True
+        pool = proxy_store.read_proxy_pool()
+        assert len(pool["items"]) == 1
+        item = pool["items"][0]
+        assert item["tag"] == "🇰🇷 韩国宽频D1"
+
+
+def test_compute_proxy_score_and_sorting():
+    # 1. 评分计算测试
+    # 健康王牌 (1.0x 倍率): 5杀 0亡 胜率100% 延迟150ms
+    score_1x = proxy_store.compute_proxy_score(
+        status="healthy",
+        kills=5,
+        deaths=0,
+        total_battles=5,
+        win_rate=100.0,
+        multiplier=1.0,
+        latency_ms=150,
+        enabled=True,
+    )
+    # 20 (healthy) + 75 (kills) - 0 + 20 (wr) + 2.5 (battles) + 15.0 (1x mult) + 4.8 (lat) = 137.3
+    assert score_1x == 137.3
+
+    # 同等战绩下，10.0x 高倍率节点惩罚
+    score_10x = proxy_store.compute_proxy_score(
+        status="healthy",
+        kills=5,
+        deaths=0,
+        total_battles=5,
+        win_rate=100.0,
+        multiplier=10.0,
+        latency_ms=150,
+        enabled=True,
+    )
+    # 10x 扣 16.5 分，相比 1x (+15分) 净差距 31.5 分
+    assert score_10x == 105.8
+    assert round(score_1x - score_10x, 1) == 31.5
+
+    # 阵亡扣分严厉 (-35/次)
+    score_with_death = proxy_store.compute_proxy_score(
+        status="healthy",
+        kills=5,
+        deaths=1,
+        total_battles=6,
+        win_rate=83.3,
+        multiplier=1.0,
+        latency_ms=150,
+        enabled=True,
+    )
+    assert score_with_death < score_1x - 30.0
+
+    # 禁用节点惩罚
+    score_disabled = proxy_store.compute_proxy_score(
+        status="healthy",
+        kills=5,
+        deaths=0,
+        total_battles=5,
+        win_rate=100.0,
+        multiplier=1.0,
+        latency_ms=150,
+        enabled=False,
+    )
+    assert score_disabled < -50.0
+
+    # 异常节点
+    score_unhealthy = proxy_store.compute_proxy_score(
+        status="unhealthy",
+        kills=0,
+        deaths=0,
+    )
+    assert score_unhealthy == -45.0  # -60 (unhealthy) + 15 (1x mult)
+
+    # 2. 排序测试
+    items = [
+        {"id": "1", "score": 50.0, "multiplier": 3.0, "kills": 2, "deaths": 1, "win_rate": 66.7, "total_battles": 3, "latency_ms": 200, "status": "healthy"},
+        {"id": "2", "score": 120.0, "multiplier": 1.0, "kills": 6, "deaths": 0, "win_rate": 100.0, "total_battles": 6, "latency_ms": 100, "status": "healthy"},
+        {"id": "3", "score": -30.0, "multiplier": 10.0, "kills": 1, "deaths": 3, "win_rate": 25.0, "total_battles": 4, "latency_ms": 500, "status": "unhealthy"},
+    ]
+    # 按综合评分排序
+    by_score = proxy_store.sort_proxy_items(items, "score")
+    assert [x["id"] for x in by_score] == ["2", "1", "3"]
+
+    # 按倍率升序 (越低越好) 排序
+    by_mult = proxy_store.sort_proxy_items(items, "multiplier")
+    assert [x["id"] for x in by_mult] == ["2", "1", "3"]
+
+    # read_proxy_pool(sort=...) 集成测试
+    with IsolatedStore():
+        proxy_store.import_proxies("proxy1.example:8081\nproxy2.example:8082")
+        pool_sorted = proxy_store.read_proxy_pool(sort="score")
+        assert pool_sorted["ok"] is True
+        assert len(pool_sorted["items"]) == 2
+        assert "score" in pool_sorted["items"][0]
+        assert "multiplier" in pool_sorted["items"][0]
+
+
 if __name__ == "__main__":
     test_normalize_proxy_formats_and_rejects_paths()
     test_import_deduplicates_and_public_view_never_leaks_credentials()
@@ -289,4 +389,7 @@ if __name__ == "__main__":
     test_async_probe_job_persists_health()
     test_home_proxy_risk_stays_usable_and_cannot_disable()
     test_1024_ports_never_enter_worker_pool()
+    test_import_preserves_url_fragment_tag()
+    test_compute_proxy_score_and_sorting()
     print("OK proxy store")
+
