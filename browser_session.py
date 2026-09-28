@@ -822,6 +822,7 @@ def create_browser_options(unique_profile=True) -> dict:
     proxies = _proxies()
     proxy = str(proxies.get("https") or proxies.get("http") or "").strip()
     if proxy:
+        upstream_proxy = proxy
         try:
             from advanced_proxy import bind_thread_proxy
             proxy = bind_thread_proxy(proxy)
@@ -829,7 +830,7 @@ def create_browser_options(unique_profile=True) -> dict:
             from advanced_proxy import unbind_thread_proxy
             unbind_thread_proxy()
             raise
-        network_proxy = meter_proxy_url(proxy)
+        network_proxy = meter_proxy_url(proxy, original_proxy=upstream_proxy)
         opts["proxy"] = _build_camoufox_proxy(network_proxy)
         try:
             exit_ip = _resolve_proxy_exit_ip(network_proxy, timeout=8.0)

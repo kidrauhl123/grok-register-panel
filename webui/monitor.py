@@ -4562,7 +4562,7 @@ function render(d) {
     } else {
       trafficStr = "等待流量计量...";
     }
-    progSubEl.innerHTML = `<span>尝试 ${attempts} 次 · 失败 ${fails} 次 · 成功率 ${rate}</span><span class="mono">${trafficStr}</span>`;
+    progSubEl.innerHTML = `<span>尝试 ${attempts} 次 · 失败 ${fails} 次 · 成功率 ${rate}</span><span class="mono" title="按节点倍率加权的折算计费流量">${trafficStr}</span>`;
   }
 
   if (Array.isArray(d.accounts)) {

@@ -222,7 +222,69 @@ def test_batch_history_is_private_idempotent_and_summarized():
         assert len(batch_traffic.read_history(history_path)["batches"]) == 2
 
 
+def test_proxy_traffic_multiplier_weighting():
+    assert batch_traffic.resolve_proxy_multiplier("http://127.0.0.1:9999") == 1.0
+    assert batch_traffic.resolve_proxy_multiplier("") == 1.0
+    assert batch_traffic.resolve_proxy_multiplier("socks5h://127.0.0.1:21001") == 1.0
+    assert batch_traffic.resolve_proxy_multiplier("socks5h://127.0.0.1:21005") == 5.0
+    assert batch_traffic.resolve_proxy_multiplier("socks5h://127.0.0.1:21010") == 10.0
+
+    upstream = FakeUpstream(("127.0.0.1", 0), FakeUpstreamHandler)
+    upstream.requests = []
+    server_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    server_thread.start()
+
+    previous_file = os.environ.get(batch_traffic.TRAFFIC_FILE_ENV)
+    previous_id = os.environ.get(batch_traffic.BATCH_ID_ENV)
+    try:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "batch_traffic.json"
+            batch_traffic.initialize_batch(path, "batch-mult", target=1, workers=1)
+            os.environ[batch_traffic.TRAFFIC_FILE_ENV] = str(path)
+            os.environ[batch_traffic.BATCH_ID_ENV] = "batch-mult"
+
+            proxy = f"http://127.0.0.1:{upstream.server_address[1]}"
+            meter = batch_traffic.meter_proxy_url(proxy, multiplier=3.0)
+
+            client = _connect_to_meter(meter)
+            client.sendall(
+                b"GET http://example.test/resource HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                + _meter_auth_header(meter)
+                + b"Connection: close\r\n\r\n"
+            )
+            response = bytearray()
+            while True:
+                chunk = client.recv(8192)
+                if not chunk:
+                    break
+                response.extend(chunk)
+            client.close()
+            assert response.endswith(b"hello")
+
+            finalized = batch_traffic.finalize_batch(path, "batch-mult", 0)
+            time.sleep(0.7)
+            metrics = batch_traffic.read_metrics(path)
+            # Response was "hello" (5 bytes) + headers. Weighted bytes should be 3x the wire bytes.
+            assert metrics["bytes_down"] >= 15
+            assert metrics["bytes_total"] == metrics["bytes_up"] + metrics["bytes_down"]
+    finally:
+        batch_traffic.close_runtime()
+        upstream.shutdown()
+        upstream.server_close()
+        server_thread.join(timeout=2)
+        if previous_file is None:
+            os.environ.pop(batch_traffic.TRAFFIC_FILE_ENV, None)
+        else:
+            os.environ[batch_traffic.TRAFFIC_FILE_ENV] = previous_file
+        if previous_id is None:
+            os.environ.pop(batch_traffic.BATCH_ID_ENV, None)
+        else:
+            os.environ[batch_traffic.BATCH_ID_ENV] = previous_id
+
+
 if __name__ == "__main__":
     test_http_connect_metering_and_private_state()
     test_batch_history_is_private_idempotent_and_summarized()
+    test_proxy_traffic_multiplier_weighting()
     print("OK batch traffic")

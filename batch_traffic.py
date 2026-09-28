@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import select
 import secrets
 import socket
@@ -15,7 +16,7 @@ import ssl
 import threading
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 from secure_files import atomic_write_json, ensure_private_dir, exclusive_file_lock
 
@@ -348,8 +349,80 @@ class _MeterServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+_MULTIPLIER_CACHE: dict[str, float] = {}
+_MULTIPLIER_LOCK = threading.Lock()
+
+
+def resolve_proxy_multiplier(proxy_url: object) -> float:
+    text = str(proxy_url or "").strip()
+    if not text:
+        return 1.0
+    with _MULTIPLIER_LOCK:
+        if text in _MULTIPLIER_CACHE:
+            return _MULTIPLIER_CACHE[text]
+
+    mult = 1.0
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+
+        root = Path(__file__).resolve().parent
+        ss_meta_path = root / "log" / "ss_pool_meta.json"
+        proxy_pool_path = root / "log" / "proxy_pool.json"
+
+        # 1. Check ss_pool_meta.json (for local tunnel ports)
+        if port and ss_meta_path.is_file():
+            try:
+                meta = json.loads(ss_meta_path.read_text(encoding="utf-8") or "[]")
+                if isinstance(meta, list):
+                    for item in meta:
+                        if isinstance(item, dict) and item.get("port") == port:
+                            tag = str(item.get("tag") or "")
+                            m = re.search(r"(\d+(?:\.\d+)?)x", tag, re.IGNORECASE)
+                            if m:
+                                mult = float(m.group(1))
+                                with _MULTIPLIER_LOCK:
+                                    _MULTIPLIER_CACHE[text] = mult
+                                return mult
+            except Exception:
+                pass
+
+        # 2. Check proxy_pool.json
+        if proxy_pool_path.is_file():
+            try:
+                pool = json.loads(proxy_pool_path.read_text(encoding="utf-8") or "{}")
+                if isinstance(pool, dict):
+                    for item in pool.get("items") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        item_url = item.get("url", "")
+                        item_port = urlsplit(item_url).port if item_url else None
+                        if item_url == text or (port and item_port == port):
+                            tag = str(item.get("tag") or "")
+                            m = re.search(r"(\d+(?:\.\d+)?)x", tag, re.IGNORECASE)
+                            if m:
+                                mult = float(m.group(1))
+                                with _MULTIPLIER_LOCK:
+                                    _MULTIPLIER_CACHE[text] = mult
+                                return mult
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    with _MULTIPLIER_LOCK:
+        _MULTIPLIER_CACHE[text] = mult
+    return mult
+
+
 class _ProxyMeter:
-    def __init__(self, upstream_url: str, state: _TrafficState):
+    def __init__(
+        self,
+        upstream_url: str,
+        state: _TrafficState,
+        multiplier: float = 1.0,
+    ):
+        self.multiplier = max(0.01, float(multiplier or 1.0))
         parsed = urlparse(upstream_url)
         self.state = state
         self.scheme = parsed.scheme
@@ -414,10 +487,11 @@ class _ProxyMeter:
                 if not data:
                     return
                 target.sendall(data)
+                w_bytes = int(round(len(data) * self.multiplier))
                 if source is client:
-                    self.state.update(bytes_up=len(data))
+                    self.state.update(bytes_up=w_bytes)
                 else:
-                    self.state.update(bytes_down=len(data))
+                    self.state.update(bytes_down=w_bytes)
 
     def handle_client(self, client: socket.socket) -> None:
         self.state.update(connections=1, active_connections=1)
@@ -437,19 +511,19 @@ class _ProxyMeter:
             if method != b"CONNECT":
                 outbound += rest
             upstream.sendall(outbound)
-            self.state.update(bytes_up=len(outbound))
+            self.state.update(bytes_up=int(round(len(outbound) * self.multiplier)))
             if method == b"CONNECT":
                 response_head, response_rest = _read_headers(upstream)
                 response = response_head + b"\r\n\r\n" + response_rest
                 client.sendall(response)
-                self.state.update(bytes_down=len(response))
+                self.state.update(bytes_down=int(round(len(response) * self.multiplier)))
                 status_line = response_head.split(b"\r\n", 1)[0]
                 if b" 200 " not in status_line:
                     return
                 tunnel_established = True
                 if rest:
                     upstream.sendall(rest)
-                    self.state.update(bytes_up=len(rest))
+                    self.state.update(bytes_up=int(round(len(rest) * self.multiplier)))
             client.settimeout(None)
             upstream.settimeout(None)
             self._relay(client, upstream)
@@ -476,7 +550,12 @@ class _MeterManager:
         self.meters: dict[str, _ProxyMeter] = {}
         self.unmetered: set[str] = set()
 
-    def wrap(self, upstream_url: str) -> str:
+    def wrap(
+        self,
+        upstream_url: str,
+        *,
+        multiplier: float = 1.0,
+    ) -> str:
         parsed = urlparse(str(upstream_url or "").strip())
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             key = hashlib.sha256(str(upstream_url or "").encode()).hexdigest()
@@ -485,11 +564,12 @@ class _MeterManager:
                     self.unmetered.add(key)
                     self.state.update(unmetered_proxies=1)
             return upstream_url
+        mult = max(0.01, float(multiplier or 1.0))
         with self.lock:
-            key = hashlib.sha256(str(upstream_url).encode()).hexdigest()
+            key = hashlib.sha256(f"{upstream_url}:{mult}".encode()).hexdigest()
             meter = self.meters.get(key)
             if meter is None:
-                meter = _ProxyMeter(upstream_url, self.state)
+                meter = _ProxyMeter(upstream_url, self.state, multiplier=mult)
                 self.meters[key] = meter
             return meter.local_url
 
@@ -525,12 +605,19 @@ def _runtime_manager() -> _MeterManager | None:
         return _RUNTIME_MANAGER
 
 
-def meter_proxy_url(upstream_url: str) -> str:
+def meter_proxy_url(
+    upstream_url: str,
+    *,
+    multiplier: float | None = None,
+    original_proxy: str | None = None,
+) -> str:
     manager = _runtime_manager()
     if manager is None or not str(upstream_url or "").strip():
         return upstream_url
+    if multiplier is None:
+        multiplier = resolve_proxy_multiplier(original_proxy or upstream_url)
     try:
-        return manager.wrap(str(upstream_url).strip())
+        return manager.wrap(str(upstream_url).strip(), multiplier=multiplier)
     except (OSError, ValueError):
         return upstream_url
 
