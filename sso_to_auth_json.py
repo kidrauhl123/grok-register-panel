@@ -85,7 +85,7 @@ DEVICE_GRACE_PROTOCOL = 6
 REDIRECT_URI = "http://127.0.0.1:56121/callback"
 GROK_REFERRER = "grok-build"
 GROK_PLAN = "generic"
-GROK_VERSION = "0.2.93"
+GROK_VERSION = "1.0.46"
 GROK_TOKEN_UA = f"grok-pager/{GROK_VERSION} grok-shell/{GROK_VERSION} (linux; x86_64)"
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -951,6 +951,235 @@ def run_check_sso_state(
     if (
         summary["total"]
         and summary["flagged_count"] + summary["clean_count"] + summary["unknown_count"] == 0
+    ):
+        summary["ok"] = False
+    return summary
+
+
+# --- 账号优惠 / 试用资格查询（读 /rest/products 的 campaign 优惠） ----------------
+
+# grok 前端 useCheckSubscriptionOffer 用价格上的 campaign.stripe 判定优惠资格：
+#   campaign.stripe.freeTrial.freeTrialDays -> 免费试用（例如 3 天 SuperGrok）
+#   campaign.stripe.payUpfront            -> 先付几个月再送几个月
+#   campaign.stripe.discount              -> 折扣
+#   campaign.braintree                    -> Braintree 优惠
+# 没有 campaign 即无任何优惠/试用资格。
+_OFFER_PRODUCTS_URL = "https://grok.com/rest/products"
+_OFFER_PROVIDER = "SUBSCRIPTION_PROVIDER_STRIPE"
+
+
+def _parse_grok_offer_state(payload) -> dict:
+    """从 /rest/products 响应解析账号优惠/试用资格。"""
+    result = {
+        "found": False,
+        "has_campaign": False,
+        "free_trial": False,
+        "free_trial_days": 0,
+        "pay_upfront": False,
+        "discount": False,
+        "braintree": False,
+        "campaign_id": "",
+        "offer_type": "",
+        "price_count": 0,
+    }
+    if not isinstance(payload, dict):
+        return result
+    products = (payload.get("stripe") or {}).get("products")
+    if not isinstance(products, list):
+        return result
+    result["found"] = True
+
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        for price in product.get("prices") or []:
+            if not isinstance(price, dict):
+                continue
+            result["price_count"] += 1
+            campaign = price.get("campaign")
+            if not isinstance(campaign, dict):
+                continue
+            result["has_campaign"] = True
+            if not result["campaign_id"]:
+                result["campaign_id"] = str(campaign.get("campaignId") or "")
+            stripe = campaign.get("stripe") or {}
+            free_trial = stripe.get("freeTrial")
+            if isinstance(free_trial, dict):
+                result["free_trial"] = True
+                try:
+                    result["free_trial_days"] = int(free_trial.get("freeTrialDays") or 0)
+                except (TypeError, ValueError):
+                    pass
+            if stripe.get("payUpfront"):
+                result["pay_upfront"] = True
+            if stripe.get("discount"):
+                result["discount"] = True
+            if campaign.get("braintree"):
+                result["braintree"] = True
+
+    if result["free_trial"]:
+        result["offer_type"] = "free_trial"
+    elif result["pay_upfront"]:
+        result["offer_type"] = "pay_upfront"
+    elif result["discount"]:
+        result["offer_type"] = "discount"
+    elif result["braintree"]:
+        result["offer_type"] = "braintree"
+    return result
+
+
+def inspect_sso_offer(
+    sso_cookie: str,
+    proxy: str = "",
+    log=print,
+    timeout: int = 20,
+) -> dict:
+    """读取 grok.com 当前账号优惠/试用资格；失败时返回 error，不阻断。"""
+    result = _parse_grok_offer_state(None)
+    result.update({"status_code": 0, "url": "", "error": ""})
+    token = str(sso_cookie or "").strip()
+    if not token:
+        result["error"] = "sso 为空"
+        return result
+
+    try:
+        session = _new_sso_session(token, proxy=proxy)
+        response = session.get(
+            _OFFER_PRODUCTS_URL,
+            params={"provider": _OFFER_PROVIDER},
+            headers={"User-Agent": DEFAULT_UA, "Accept": "application/json"},
+            impersonate="chrome",
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        result["status_code"] = int(getattr(response, "status_code", 0) or 0)
+        result["url"] = str(getattr(response, "url", "") or "")
+        if result["status_code"] != 200:
+            result["error"] = f"/rest/products HTTP {result['status_code']}"
+            return result
+        try:
+            payload = response.json()
+        except Exception as exc:
+            result["error"] = f"products 响应非 JSON: {exc}"
+            return result
+        result.update(_parse_grok_offer_state(payload))
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+
+
+def classify_sso_offer(state: dict) -> str:
+    """Map inspect_sso_offer() into trial / offer / none / error."""
+    if not isinstance(state, dict):
+        return "unknown"
+    try:
+        status = int(state.get("status_code") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status != 200 or str(state.get("error") or "").strip():
+        return "error"
+    if state.get("free_trial"):
+        return "trial"
+    if state.get("pay_upfront") or state.get("discount") or state.get("braintree"):
+        return "offer"
+    if state.get("found"):
+        return "none"
+    return "unknown"
+
+
+def run_check_sso_offer(
+    records: list[SsoInput],
+    *,
+    proxy: str = "",
+    delay: float = 0,
+    export: str | Path | None = None,
+    log=print,
+    on_item=None,
+    cancel_callback=None,
+) -> dict:
+    """批量读取 grok.com 账号优惠/试用资格，不换 token 不入库。
+
+    export 边检查边逐行追加写（0600），中断不丢已检查结果；导出行不含 SSO token。
+    """
+    summary: dict = {
+        "ok": True,
+        "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "total": 0,
+        "trial_count": 0,
+        "offer_count": 0,
+        "none_count": 0,
+        "error_count": 0,
+        "items": [],
+        "export_path": "",
+        "export_count": 0,
+        "cancelled": False,
+    }
+    export_path = None
+    if export:
+        export_path = Path(export)
+        export_path.unlink(missing_ok=True)
+
+    total = len(records)
+    for i, record in enumerate(records, 1):
+        if cancel_callback and cancel_callback():
+            summary["cancelled"] = True
+            break
+        email = str(record.email or "").strip()
+
+        def _check_log(message, _i=i):
+            log(f"  [{_i}] {str(message).strip()}")
+
+        state = inspect_sso_offer(record.sso, proxy=proxy, log=_check_log)
+        verdict = classify_sso_offer(state)
+        summary["total"] += 1
+        row = {
+            "index": i,
+            "email": email,
+            "has_free_trial": verdict == "trial",
+            "free_trial_days": state.get("free_trial_days") or 0,
+            "offer_type": state.get("offer_type") or "",
+            "campaign_id": state.get("campaign_id") or "",
+            "pay_upfront": bool(state.get("pay_upfront")),
+            "discount": bool(state.get("discount")),
+            "braintree": bool(state.get("braintree")),
+            "status_code": state.get("status_code"),
+            "verdict": verdict,
+            "error": state.get("error") or "",
+        }
+        summary["items"].append(row)
+        if verdict == "trial":
+            summary["trial_count"] += 1
+        elif verdict == "offer":
+            summary["offer_count"] += 1
+        elif verdict == "none":
+            summary["none_count"] += 1
+        else:
+            summary["error_count"] += 1
+
+        if export_path:
+            append_private_text(export_path, json.dumps(row, ensure_ascii=False) + "\n")
+            summary["export_count"] += 1
+
+        tag = "🟢" if verdict == "trial" else ("🟡" if verdict == "offer" else ("⚪" if verdict == "none" else "⚠️"))
+        log(
+            f"{tag} [{i}/{total}] {email or '(no email)'} "
+            f"verdict={verdict} status={state.get('status_code')}"
+            + (f" days={state.get('free_trial_days')}" if verdict == "trial" else "")
+            + (f" err={state.get('error')}" if state.get("error") else "")
+        )
+        if on_item:
+            on_item(row, record, summary)
+        if delay and i < total:
+            if cancel_callback and cancel_callback():
+                summary["cancelled"] = True
+                break
+            time.sleep(float(delay))
+
+    summary["export_path"] = str(export_path) if export_path else ""
+    if (
+        summary["total"]
+        and summary["trial_count"] + summary["offer_count"] + summary["none_count"] == 0
     ):
         summary["ok"] = False
     return summary

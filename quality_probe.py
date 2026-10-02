@@ -239,6 +239,15 @@ def _auth_headers(record: dict) -> dict:
         for key, value in extra.items():
             if value:
                 headers[str(key)] = str(value)
+    # Ensure client version meets xAI minimum requirement (>= 1.0.13)
+    ver = headers.get("x-grok-client-version") or headers.get("X-Grok-Client-Version")
+    if not ver or str(ver).startswith("0."):
+        default_ver = CPA_GROK_HEADERS.get("x-grok-client-version", "1.0.46")
+        headers["x-grok-client-version"] = default_ver
+        if "X-Grok-Client-Version" in headers:
+            headers["X-Grok-Client-Version"] = default_ver
+        if "User-Agent" in headers and "0.2." in headers["User-Agent"]:
+            headers["User-Agent"] = CPA_GROK_HEADERS.get("User-Agent", f"grok-pager/{default_ver} grok-shell/{default_ver} (linux; x86_64)")
     headers["Authorization"] = f"Bearer {access}"
     headers["Content-Type"] = "application/json"
     headers["Accept"] = "text/event-stream"

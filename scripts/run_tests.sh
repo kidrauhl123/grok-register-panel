@@ -15,6 +15,7 @@ tests=(
   tests/test_windows_runtime.py
   tests/test_sso_recovery.py
   tests/test_sso_state.py
+  tests/test_subscription.py
   tests/test_registration_risk_gate.py
   tests/test_quality_probe.py
   tests/test_quality_register.py
@@ -68,6 +69,7 @@ done
   proxy_bridge.py \
   scripts/check_bfs.py \
   scripts/check_sso_state.py \
+  scripts/check_subscription.py \
   scripts/check_quality.py \
   webui/bfs_ops.py \
   webui/sso_state_ops.py \

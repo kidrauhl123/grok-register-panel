@@ -25,3 +25,6 @@ stickies*.txt
 *.fixed-keep
 *.lock
 .DS_Store
+
+# Outlook RT inventory (MSA refresh tokens)
+outlook_rt_inventory*
