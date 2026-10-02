@@ -1,16 +1,30 @@
-This project includes modifications derived from:
+This project is an independently maintained and enhanced edition derived from:
 
-  AaronL725/grok-register
-  https://github.com/AaronL725/grok-register
+1. Direct Upstream:
+   lij768423-svg/grok-register-panel
+   https://github.com/lij768423-svg/grok-register-panel
+   Copyright (c) 2026 lij768423-svg (MIT License).
+   Provided the Live monitoring dashboard, task orchestration, sing-box external proxy integration, and BFS verification.
 
-Original work Copyright (c) 2026 AaronL725 (MIT License).
+2. Root Upstream:
+   AaronL725/grok-register
+   https://github.com/AaronL725/grok-register
+   Original work Copyright (c) 2026 AaronL725 (MIT License).
+   Provided the Camoufox browser registration prototype and flow foundation.
 
-Additional panel, orchestration, redaction, and operational tooling by
-grok-register-panel contributors.
+Enhancements, custom architectures, and ongoing maintenance:
+   kidrauhl123/grok-register-panel
+   Copyright (c) 2026 kidrauhl123 (MIT License).
+   Includes:
+   - Advanced proxy intelligence (KDA combat win-rate rating, dynamic weighted sorting, MVP badge).
+   - Weighted traffic metering (1x–10x multiplier accounting).
+   - Account lifecycle checks (Grok subscription / trial offer automated status probe & client version fallback).
+   - Modernized UI layout, target-account health tracker, and robust self-healing workflows.
 
-See LICENSE for the full MIT text. The original copyright notice is retained
-as required by the upstream MIT license.
+See LICENSE for the full MIT text. All original copyright notices are retained
+as required by the upstream MIT licenses.
 
 The bundled Geist and Geist Mono font files are Copyright 2024 The Geist
 Project Authors and are distributed under the SIL Open Font License 1.1.
 See LICENSES/OFL-1.1-Geist.txt.
+

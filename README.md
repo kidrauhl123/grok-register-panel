@@ -1,25 +1,32 @@
 <div align="center">
 
-# Grok Register + Live Panel
+# Grok Register + Live Panel (Enhanced Edition)
 
-Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (MIT).
+**基于双上游演进的独立增强版**  
+直接上游：[lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel) (MIT) · 最原版上游：[AaronL725/grok-register](https://github.com/AaronL725/grok-register) (MIT)
 
-kidrauhl123 fork of the upstream panel: Camoufox 批量注册 + Live 面板，并接上 VLESS/SS（sing-box）、chenyme grok2api 远端导入、按思考文本判定降智。
+由 [kidrauhl123](https://github.com/kidrauhl123) 维护与深度增强：Camoufox 批量注册 + Live 监控面板 + **KDA 代理战力评分体系** + **1x~10x 节点加权流量计量** + **订阅/试用优惠状态自动探测** + VLESS/SS (sing-box) 接入 + 远端导入门禁。
 
 批量注册 Grok 账号（Camoufox）+ Web 监控面板  
-任务编排 / 代理池 / 邮箱服务 / 账号补录 / BFS 检测 / **降智测试** / **Token 鉴权**
+任务编排 / 代理池 / 邮箱服务 / 账号补录 / BFS 检测 / **降智测试** / **Token 鉴权** / **战力评分**
 
-[介绍页](https://lij768423-svg.github.io/grok-register-panel/) · [Discussions](https://github.com/lij768423-svg/grok-register-panel/discussions)
+[Discussions](https://github.com/kidrauhl123/grok-register-panel/discussions) · [Issues](https://github.com/kidrauhl123/grok-register-panel/issues)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)
-![Stars](https://img.shields.io/github/stars/lij768423-svg/grok-register-panel?style=flat)
-[![Site](https://img.shields.io/badge/site-github.io-111111.svg)](https://lij768423-svg.github.io/grok-register-panel/)
+![Stars](https://img.shields.io/github/stars/kidrauhl123/grok-register-panel?style=flat)
 
 </div>
 
 ---
 
+> [!NOTE]
+> ### 鸣谢与双上游源流说明（Lineage & Upstream Attribution）
+> 本项目为独立演进与增强版本，源流关系如下：
+> 1. **最原版上游（Root Upstream）**：[AaronL725/grok-register](https://github.com/AaronL725/grok-register)（MIT License），提供 Camoufox 注册流原型与底层交互基础；
+> 2. **直接上游（Direct Upstream）**：[lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel)（MIT License），提供 Live Web 监控面板、sing-box 外部代理基础与任务编排体系；
+> 3. **本项目自研增强（kidrauhl123 Enhanced Edition）**：在继承上述优秀开源成果的基础上，深度自研了 **KDA 代理战力计分体系与 MVP 勋章**、**1x~10x 节点加权流量计量**、**Grok 试用优惠与订阅状态自动探测**、**现代化 UI 布局与严格目标追踪自愈流**等特性。
+>
 > **声明：** 仅供自动化流程研究、自有环境联调与个人学习。请遵守 xAI / 邮箱 / 代理服务商条款与当地法律，勿用于未授权批量滥用。
 
 ## 功能一览
@@ -40,6 +47,9 @@ kidrauhl123 fork of the upstream panel: Camoufox 批量注册 + Live 面板，�
 | 失败恢复 | 待处理 SSO / accounts 文本补录 CPA，跳过已有账号，成功后自动出队 |
 | 安全静态缓存 | 面板任务默认复用 JS / CSS / 字体 / 图片等 GET 静态资源；不缓存文档、接口、WebSocket 或 Turnstile |
 | 批次流量计量 | 在现有 HTTP 代理前增加仅监听本机的临时计量层，展示本批上行、下行与总量，不保存代理地址或凭据 |
+| **加权流量计量 (自研)** | 支持每个节点配置 1x~10x 计费倍率，实时折算消耗流量，更真实反映代理成本 |
+| **代理战力评分 (自研)** | 引入基于胜率、连续被封与历史产出的 KDA 战力综合评分，支持加权排序与 Rank 1 MVP 勋章 |
+| **订阅/试用探测 (自研)** | 自动检查 Grok 账号订阅档位及试用优惠状态，具备客户端版本号自愈与保底适配能力 |
 | 安全存储 | 代理、账号、SSO、日志、auth 与运行状态默认使用 owner-only 权限 |
 
 ## 界面预览
@@ -112,7 +122,7 @@ Linux 容器必须保留 procfs（通常为默认的 `/proc` 挂载），面板�
 ### 安装
 
 ```bash
-git clone https://github.com/lij768423-svg/grok-register-panel.git
+git clone https://github.com/kidrauhl123/grok-register-panel.git
 cd grok-register-panel
 
 python3 -m venv .venv
@@ -593,15 +603,17 @@ A: 在控制台使用“账号补录”。待处理模式成功后自动出队�
 
 ## License
 
-[MIT](LICENSE) — 见 [NOTICE](NOTICE) 对 AaronL725/grok-register 的归属说明。面板内嵌 Geist 字体使用 [SIL OFL 1.1](LICENSES/OFL-1.1-Geist.txt)。
+[MIT](LICENSE) — 遵循 MIT 开源协议。双上游版权归属与字体授权声明详见 [NOTICE](NOTICE)。  
+面板内嵌 Geist 字体使用 [SIL OFL 1.1](LICENSES/OFL-1.1-Geist.txt)。
 
-## 致谢
+## 致谢与源流说明
 
-- [Camoufox](https://camoufox.com/)
+- **最原版上游**：[AaronL725/grok-register](https://github.com/AaronL725/grok-register) — 感谢原作者开创 Camoufox 浏览器注册流原型
+- **直接上游**：[lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel) — 感谢提供 Web 监控面板、sing-box 外部代理基础与任务编排体系
+- [Camoufox](https://camoufox.com/) — 高度拟真的反检测浏览器核心
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 等下游生态
-- 上游 [AaronL725/grok-register](https://github.com/AaronL725/grok-register)
 - 社区里分享风控字段与工程经验的各位
 
 ---
 
-Star 鼓励一下 → https://github.com/lij768423-svg/grok-register-panel
+Star 鼓励一下 → https://github.com/kidrauhl123/grok-register-panel
