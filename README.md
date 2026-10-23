@@ -20,16 +20,6 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 
 > **声明：** 仅供自动化流程研究、自有环境联调与个人学习。请遵守 xAI / 邮箱 / 代理服务商条款与当地法律，勿用于未授权批量滥用。
 
-## 赞助商
-
-[![IPWO 住宅代理：稳定连接、全球节点、多协议支持](docs/sponsors/ipwo-banner.png)](https://www.ipwo.net/?ref=githubregisterpanel)
-
-**IPWO 住宅代理**提供动态代理、静态代理及不限量代理服务，覆盖 **195+ 个国家和地区**，支持 **HTTP(S) 与 SOCKS5** 协议，适用于多种浏览器自动化和网络应用场景。
-
-对于使用 Camoufox、代理池或多任务浏览器工作流的开发者，IPWO 可作为可选的住宅代理资源，支持灵活配置网络出口与地区选择，适用于网页访问、数据采集、网络测试等场景。
-
-**[访问 IPWO 住宅代理](https://www.ipwo.net/?ref=githubregisterpanel)**
-
 ## 功能一览
 
 | 能力 | 说明 |
@@ -100,6 +90,18 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 ```
 
 说明：**注册机本身只配置一层 HTTP 代理 URL**。若需要「先节点再家宽」等链式出口，在代理客户端（如 mihomo `dialer-proxy`）配置，对注册机透明。
+
+## 代理推荐
+
+[![IPWO 住宅代理：稳定连接、全球节点、多协议支持](docs/sponsors/ipwo-banner.png)](https://www.ipwo.net/?ref=githubregisterpanel)
+
+**IPWO 住宅代理**提供动态代理、静态代理及不限量代理服务，覆盖 **195+ 个国家和地区**，支持 **HTTP(S) 与 SOCKS5** 协议，适用于多种浏览器自动化和网络应用场景。
+
+对于使用 Camoufox、代理池或多任务浏览器工作流的开发者，IPWO 可作为可选的住宅代理资源，支持灵活配置网络出口与地区选择，适用于网页访问、数据采集、网络测试等场景。
+
+支持免费测试，90优惠码：**`0200`**。
+
+**[访问 IPWO 住宅代理](https://www.ipwo.net/?ref=githubregisterpanel)**
 
 ## 快速开始
 
