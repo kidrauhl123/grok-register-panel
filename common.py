@@ -38,22 +38,39 @@ def generate_username(length: int = 10) -> str:
     return (name[:30] or f"{first}{random.randint(10, 99)}")
 
 
+def _normalize_domain_items(items: List[Any]) -> List[dict]:
+    """把域名列表统一成 dict 形态。
+
+    cfmail 兼容 worker 的 /api/domains 返回纯字符串数组
+    （{"results":["jung.edu.pl",...]}），而上层按 d.get("isVerified") 取值，
+    不过滤会 AttributeError，过滤成 [] 又会报"无可用域名"。
+    这里把字符串规整为 {"domain": s, "isVerified": True}。
+    """
+    out: List[dict] = []
+    for item in items:
+        if isinstance(item, dict):
+            out.append(item)
+        elif isinstance(item, str) and item.strip():
+            out.append({"domain": item.strip(), "isVerified": True})
+    return out
+
+
 def pick_list_payload(data: Any) -> List[dict]:
     if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
+        return _normalize_domain_items(data)
     if isinstance(data, dict):
         if isinstance(data.get("results"), list):
-            return [item for item in data["results"] if isinstance(item, dict)]
+            return _normalize_domain_items(data["results"])
         if isinstance(data.get("hydra:member"), list):
-            return [item for item in data["hydra:member"] if isinstance(item, dict)]
+            return _normalize_domain_items(data["hydra:member"])
         if isinstance(data.get("data"), list):
-            return [item for item in data["data"] if isinstance(item, dict)]
+            return _normalize_domain_items(data["data"])
         if isinstance(data.get("messages"), list):
-            return [item for item in data["messages"] if isinstance(item, dict)]
+            return _normalize_domain_items(data["messages"])
         if isinstance(data.get("data"), dict):
             nested = data.get("data") or {}
             if isinstance(nested.get("messages"), list):
-                return [item for item in nested["messages"] if isinstance(item, dict)]
+                return _normalize_domain_items(nested["messages"])
     return []
 
 
