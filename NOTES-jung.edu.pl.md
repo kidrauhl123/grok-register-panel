@@ -265,3 +265,61 @@ Outlook Graph（真实认证发件方，SPF/DKIM 齐全）发信：
 ### 不依赖 CF 的备选
 
 Outlook Graph 通道已验证稳定（取码 4/4）。绕开 CF 只需解决邮箱库存。
+
+
+## 19:20 时间线锁定：部署动作打断了 Email Routing
+
+| 时间 | 事件 |
+|---|---|
+| 10-23 05:05 | **最后一次成功投递** |
+| 10-23 05:18 | `worker.js` 被修改（29273 bytes） |
+| 10-23 05:19 | `mail-worker-deploy.md` 更新 |
+| 10-23 07:26 | 写 `deploy_subdomains.sh`（就是为了修收信问题） |
+| 10-23 07:54 | 写 `CF_TOKEN_GUIDE.md`（在求 token，说明没拿到） |
+| 10-24 全天 | 零投递，但 worker 建箱正常 |
+
+`mail-worker-deploy.md` 自己记录过：
+> **坑 1**：PATCH `/settings` 的 bindings 是全量替换，漏了 D1 绑定会让 `env.DB` undefined。
+> 改绑定永远用完整 PUT。
+
+`deploy_subdomains.sh` 第 4 步也是 `PUT .../settings` 全量替换 bindings。
+但 `env.DB` 现在没坏（建箱正常），所以**坏的是 Email Routing 那一侧**。
+
+### 关键：`deploy_subdomains.sh` 只建 MX，不碰 Email Routing 规则
+
+脚本做的：
+1. 查 account/zone
+2. 读 worker settings
+3. 扩 `MAIL_DOMAINS`
+4. PUT settings（全量 bindings）
+5. 为子域建 MX + SPF
+6. 验证能建址
+
+**没有一步是设置 `email/routing/rules/catch_all` 指向 worker。**
+Cloudflare Email Routing 的 catch-all 是独立资源，不在 worker settings 里。
+所以如果 catch-all 被改成 `drop` 或丢了 worker 目标，脚本修不好。
+
+### 修复脚本（已就绪）
+
+`/tmp/fix_email_routing.sh` —— 需要 `CLOUDFLARE_API_TOKEN`：
+```bash
+export CLOUDFLARE_API_TOKEN="<token>"
+bash /tmp/fix_email_routing.sh
+```
+它会：
+1. 查 zone
+2. 打印 Email Routing 总状态
+3. 打印当前所有 routing rules（看 catch-all 是否还在、是否指向 worker）
+4. 打印 MX/SPF
+5. **PUT catch_all 强制指回 worker**
+6. 提示用 `/tmp/verify_delivery.py` 验证
+
+Token 权限：`Zone:Read` + `Email Routing Rules:Edit` + `Workers Scripts:Read`
+
+### 验证脚本（已就绪）
+
+```bash
+python3 /tmp/verify_delivery.py jung.edu.pl
+# 建箱 -> Outlook Graph 真发信 -> 12 轮 x 6s 轮询
+# 输出 *** DELIVERY WORKS *** 或 *** STILL BROKEN ***
+```
