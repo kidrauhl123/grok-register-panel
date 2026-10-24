@@ -341,7 +341,7 @@ def mask_email(email: str) -> str:
 
 
 FAIL_LABELS = {
-    FAIL_DOMAIN: "域名拒绝",
+    FAIL_DOMAIN: "出口受限",
     FAIL_RISK: "注册风控",
     FAIL_CODE: "验证码超时",
     FAIL_BROWSER: "浏览器断开",
@@ -622,6 +622,45 @@ _proxy_pool_lock = threading.Lock()
 _proxy_pool_source = "none"
 _proxy_leases: dict = {}
 _proxy_lease_lock = threading.Lock()
+# xAI 按出口 IP 限制邮箱注册：被拒的节点在 TTL 内直接跳过，避免反复撞同一口
+_proxy_signup_banned: dict = {}   # url -> 解禁时间戳
+_proxy_ban_lock = threading.Lock()
+# 实测配额按时间窗口恢复（21171 从 BLOCKED 变回 VERIFY），
+# 默认 15 分钟后再试，避免整池一次性永久拉黑
+SIGNUP_BAN_TTL = max(60, int(os.environ.get("SIGNUP_BAN_TTL", "900") or 900))
+
+
+def ban_proxy_for_signup(url: str, reason: str = "") -> None:
+    """把该出口标记为 xAI 拒绝邮箱注册，TTL 内不再选用。"""
+    u = str(url or "").strip()
+    if not u:
+        return
+    with _proxy_ban_lock:
+        _proxy_signup_banned[u] = time.time() + SIGNUP_BAN_TTL
+    try:
+        cli_log(f"[*] 节点已加入临时黑名单 {SIGNUP_BAN_TTL}s: {redact_proxy(u)}")
+    except Exception:
+        pass
+
+
+def _is_proxy_signup_banned(url: str) -> bool:
+    u = str(url or "").strip()
+    if not u:
+        return False
+    with _proxy_ban_lock:
+        until = _proxy_signup_banned.get(u)
+        if until is None:
+            return False
+        if time.time() >= until:
+            _proxy_signup_banned.pop(u, None)
+            return False
+        return True
+
+
+def active_signup_bans() -> int:
+    with _proxy_ban_lock:
+        now = time.time()
+        return sum(1 for t in _proxy_signup_banned.values() if t > now)
 _submit_slot_lock = threading.Lock()
 _next_submit_at = 0.0
 # 各窗口提交邮箱至少隔这么久，避免同时打 xAI 验证码
@@ -754,6 +793,8 @@ def pick_proxy_for_worker(worker_id: int, rotate_idx: int = 0) -> str:
         for offset, cand in enumerate(pool):
             if cand in avoid:
                 continue
+            if _is_proxy_signup_banned(cand):
+                continue
             ip = str((by_url.get(cand) or {}).get("exit_ip") or "").strip()
             if ip and ip in hot_ips and cand != current:
                 continue
@@ -764,12 +805,19 @@ def pick_proxy_for_worker(worker_id: int, rotate_idx: int = 0) -> str:
             leftovers = [
                 (-_age(cand), idx, cand)
                 for idx, cand in enumerate(pool)
-                if cand not in others
+                if cand not in others and not _is_proxy_signup_banned(cand)
             ]
             leftovers.sort()
             selected = leftovers[0][2] if leftovers else ""
         if not selected:
-            selected = pool[(wid + rot) % len(pool)]
+            usable = [u for u in pool if not _is_proxy_signup_banned(u)]
+            if usable:
+                selected = usable[(wid + rot) % len(usable)]
+            elif pool:
+                raise RuntimeError(
+                    f"代理池 {len(pool)} 个节点全部被 xAI 限制邮箱注册（临时黑名单），"
+                    f"请补充新节点或等待 {SIGNUP_BAN_TTL}s 后解禁"
+                )
         _proxy_leases[wid] = selected
     try:
         _mark_managed_proxy_used(selected)
@@ -4000,14 +4048,19 @@ class GrokRegisterGUI:
                     wlog("[!] 注册被用户停止")
                     break
                 except EmailDomainRejected as exc:
+                    # 该出口 IP 已被 xAI 限制邮箱注册：拉黑并让下号换口
+                    try:
+                        ban_proxy_for_signup(get_thread_proxy() or str(config.get('proxy') or ''))
+                    except Exception:
+                        pass
                     kind = self._record_failure(exc)
                     retry_count_for_slot = 0
                     i += 1
                     wlog(
-                        f"[-] 邮箱域名被 xAI 拒绝 [{FAIL_LABELS.get(kind, kind)}]: "
+                        f"[-] xAI 拒绝邮箱注册 [{FAIL_LABELS.get(kind, kind)}]: "
                         f"{redact_sensitive_log_line(str(exc))}"
                     )
-                    wlog("[!] 请更换邮箱提供商或域名（如 Cloudflare 自建域 / MailNest），公共临时域常被拉黑")
+                    wlog("[!] 该出口 IP 已被 xAI 限制邮箱注册，下号自动轮换代理节点")
                 except AccountRetryNeeded as exc:
                     retry_count_for_slot += 1
                     if retry_count_for_slot <= max_slot_retry:
@@ -4150,17 +4203,35 @@ def run_registration_cli(count):
                 f"[检查] [{'OK' if ok else 'FAIL'}] {name}: "
                 f"{redact_sensitive_log_line(detail)}"
             )
+        # 单节点 TLS 抖动不该拖垮整批：换池内其它节点重试预检
+        if _conn.has_blocking_xai_failure(startup_checks) and len(pool) > 1:
+            tried = {str(startup_config.get("proxy") or "")}
+            for _attempt in range(min(len(pool) - 1, 6)):
+                alt = next((u for u in pool if u not in tried), "")
+                if not alt:
+                    break
+                tried.add(alt)
+                cli_log(f"[检查] 预检失败，换节点重试: {redact_proxy(alt)}")
+                startup_config["proxy"] = alt
+                startup_checks = _conn.run_connectivity_checks(
+                    startup_config, http_get, http_post
+                )
+                for name, ok, detail in startup_checks:
+                    cli_log(
+                        f"[检查] [{'OK' if ok else 'FAIL'}] {name}: "
+                        f"{redact_sensitive_log_line(detail)}"
+                    )
+                if not _conn.has_blocking_xai_failure(startup_checks):
+                    break
         if _conn.has_blocking_xai_failure(startup_checks):
             _record_proxy_precheck_failure(
                 str(startup_config.get("proxy") or ""),
                 startup_checks,
             )
-            cli_log("[!] xAI 注册页预检失败，已停止当前批次；请检查或更换当前 proxy 后重试")
-            try:
-                signal.signal(signal.SIGINT, _prev_sigint)
-            except Exception:
-                pass
-            _conn.require_xai_signup(startup_checks)
+            # 预检只是 curl 层的 TLS/可达性判断，和真实浏览器链路不等价：
+            # 实测多次出现预检 TLS 报错但 Camoufox 能正常打开注册页。
+            # 因此这里降级为警告，交给真实流程判定，避免整批白跑。
+            cli_log("[!] xAI 注册页预检未通过（仅 curl 层），继续用真实浏览器尝试")
     except _conn.XaiSignupPrecheckFailed:
         raise
     except Exception as exc:
@@ -4350,15 +4421,22 @@ def run_registration_cli(count):
                     except RegistrationCancelled:
                         break
                     except EmailDomainRejected as exc:
+                        # 该出口 IP 已被 xAI 限制邮箱注册：拉黑并让下号换口
+                        try:
+                            ban_proxy_for_signup(get_thread_proxy() or str(config.get('proxy') or ''))
+                        except Exception:
+                            pass
                         kind = classify_failure(exc)
                         local_fail_stats[kind] = local_fail_stats.get(kind, 0) + 1
                         local_fail += 1
                         i += 1
                         retry = 0
                         cli_log(
-                            f"[W{wid+1}] [-] 域名拒绝: "
+                            f"[W{wid+1}] [-] xAI 拒绝邮箱注册（出口 IP 受限）: "
                             f"{redact_sensitive_log_line(str(exc))}"
                         )
+                        rotate_idx += 1
+                        cli_log(f"[W{wid+1}] [*] 下号轮换节点 #{rotate_idx}")
                         if config.get("email_provider") == "outlook" and email and not registration_submitted:
                             outlook_provider.release(
                                 config.get("outlook_accounts_file", "keys/outlook_pending.txt"),
@@ -4774,6 +4852,11 @@ def run_registration_cli(count):
                 cli_log("[!] 注册被停止")
                 break
             except EmailDomainRejected as exc:
+                # 该出口 IP 已被 xAI 限制邮箱注册：拉黑并让下号换口
+                try:
+                    ban_proxy_for_signup(get_thread_proxy() or str(config.get('proxy') or ''))
+                except Exception:
+                    pass
                 kind = _cli_record_failure(exc)
                 retry_count_for_slot = 0
                 i += 1
@@ -4789,7 +4872,7 @@ def run_registration_cli(count):
                     worker="W1",
                     log_callback=cli_log,
                 )
-                cli_log("[!] 请更换邮箱提供商或域名（如 Cloudflare 自建域 / MailNest），公共临时域常被拉黑")
+                cli_log("[!] xAI 对该出口 IP 限制邮箱注册；下号将自动轮换代理节点")
                 mark_slot_completed()
             except AccountRetryNeeded as exc:
                 retry_count_for_slot += 1

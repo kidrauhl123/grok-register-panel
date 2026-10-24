@@ -879,6 +879,10 @@ const patterns = [
     /use another email address/i,
     /请使用其他邮箱/,
     /support@x\.ai/,
+    // xAI 对当前出口 IP 关闭邮箱注册时的通用文案（含弯引号变体）
+    /email sign-?up (?:is|isn['\u2019]?t|is not) available/i,
+    /sign up another way/i,
+    /电子邮件注册.{0,20}(不可用|暂不可用)/,
 ];
 for (const text of texts) {
     for (const re of patterns) {
