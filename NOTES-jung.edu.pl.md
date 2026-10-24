@@ -176,3 +176,48 @@ worker 全站统计（`GET /api/inbox?t=<ADMIN_PASSWORD>&limit=500`）：
    管理员 session + `X-CSRF-Token` 可查/建 Key
 2. 采购新的 Outlook 账号（`client_id=9e5f94bc-e8a4-4e73-b8be-63364c29d753` 这套是第三方 Graph 应用）
 3. 给 jung.edu.pl 换一个 xAI 还没拉黑的域名（需先验证 xAI 是否按域判定）
+
+
+## 2026-10-24 19:00 根因锁定：CF Email Routing 断投
+
+### 决定性对照实验
+
+用 Outlook Graph API **真实发信**（`POST /v1.0/me/sendMail`，返回 202 已接受）：
+
+| 收件地址 | 结果 |
+|---|---|
+| `rosewilson27@jung.edu.pl` | 48s 内 **0 投递** |
+| `luodong@mail.jung.edu.pl` | 48s 内 **0 投递** |
+
+且发件方**没有收到退信**。
+
+### 排除法
+
+| 假设 | 证据 | 结论 |
+|---|---|---|
+| xAI 不发信 | `noreply@x.ai` → Outlook 收件箱成功（`Grok confirmation code: 367-362`） | ✗ 排除 |
+| xAI 只丢 jung 域 | 用非 xAI 的发件方（Outlook Graph）也丢 | ✗ 排除 |
+| worker 挂了 | `/health` 200，建箱正常（今天 110 个） | ✗ 排除 |
+| 域名 MX 错 | MX 正常指向 `route1/2/3.mx.cloudflare.net` | ✗ 排除 |
+| CF MX 不通 | `route1.mx.cloudflare.net:25` EHLO 250 正常 | ✗ 排除 |
+| **CF Email Routing → worker 绑定失效** | 以上全部排除后唯一剩余项 | ✓ **锁定** |
+
+### 影响
+
+- `jung.edu.pl` / `mail.jung.edu.pl` 从 **2026-10-23 05:05** 起零投递
+- 期间 worker 仍能建箱（今天 110 个），所以表面正常，实际收不到任何邮件
+
+### 修复路径
+
+1. **Cloudflare 控制台** → 该 Zone → Email → Email Routing → Routing rules
+   检查 catch-all 是否仍为 `Send to a Worker` 并指向正确的 worker
+   （`mail-worker-deploy.md` 里提过：PATCH `/settings` 的 bindings 是全量替换，
+   漏了 D1 绑定会让 env.DB undefined；同理 routing rule 也可能被覆盖）
+2. 或用 CF API：`GET /zones/{zone}/email/routing/rules` 查看 catch-all
+3. 修好后用 Outlook Graph 发一封测试信即可验证（本文件已记录该方法）
+
+### 另一条不依赖 CF 的路
+
+Outlook Graph 通道**已验证可用且稳定**（取码 4/4 成功）。
+若修 CF 太慢，直接用 Outlook/Graph 做取码即可绕开这个问题 ——
+唯一缺口是「未注册过 xAI 的 Outlook 账号库存」。
