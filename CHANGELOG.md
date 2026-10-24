@@ -1,16 +1,41 @@
 # Changelog
 
-## Unreleased
+## Unreleased（本 fork 自研，未发布）
 
 ### Added
 
 - Import VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks (and Base64 subscriptions). Camoufox still uses HTTP; `sing-box` is started locally.
 - Optional chenyme grok2api remote import: `grok2api_auto_add_remote` plus admin credentials push Grok Web SSO to the reverse proxy.
+- 代理节点 KDA 评分、连胜/连败计分板、加权流量计费（1x–10x 倍率）、复合排序与 MVP 徽章。
+- 人化操作引擎：键盘动力学、鼠标漂移、hover、Turnstile 抖动、表单真实停顿。
+- Grok 账号订阅/试用优惠状态检查与客户端版本号保底（`GROK_VERSION = 1.0.46`）。
+- 恢复链路：远端 Premsir 导入与 SSO 转换时的质量闸联动。
 
 ### Changed
 
 - 降智测试只按有没有 thinking **文本**判定：有 thinking 为正常，没有为降智。账单里的 `reasoning_tokens` 单独出现不算思考。
 - `quality_probe_on_register` 默认打开。
+- `fill_email_and_submit` 超时保持 60s（人化流程较慢）；注册页壳等待放宽到 20s（对齐上游）。
+
+## 0.6.0 - 2026-10-24（已合入上游）
+
+### Added
+
+- 新增 Outlook/Hotmail 本地卡池 provider：支持 `email----password----client_id----refresh_token` 格式、IMAP XOAUTH2 收信，以及桌面 GUI / CLI 配置。
+- 新增 20 项离线回归测试，覆盖跨平台导入、旧编码控制台、线程/进程并发取号、共享已用文件、写盘异常、旧邮件过滤和注册阶段回收边界；接入现有 Windows 测试入口。
+
+### Changed
+
+- 页面导航默认等待 `domcontentloaded`，并放宽注册页与邮箱表单等待时间。
+- CPA chat 请求头默认使用客户端版本 `1.0.13`，可通过 `GROK_CLIENT_VERSION` 覆盖；token 交换链路继续使用独立版本常量。
+- 降智测试只按有没有 thinking 判定：有 thinking 为正常，没有为降智。不再用 Token/s / `burst` / `soft` 分档。
+
+### Fixed
+
+- Outlook 卡池复用跨平台文件锁和私有原子写入，修复 Windows 无法导入 `fcntl` 的启动错误及旧编码控制台中文日志异常。
+- 取号时先保存已用记录，再更新待用池；写盘与回滚异常保留账号记录，已用路径留空使用默认值，多个卡池共用已用文件时共同加锁。
+- 仅读取基线 UID 之后的新邮件；基线探测失败时归还邮箱并终止该次取号，防止误用旧验证码。
+- 并发 worker 进入建号资料提交阶段后保留邮箱为已用状态，防止 SSO 超时、建号结果不明或本地保存失败导致重复注册。
 
 ## 0.5.0 - 2026-09-06
 

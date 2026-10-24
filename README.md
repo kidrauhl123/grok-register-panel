@@ -71,7 +71,7 @@
 </details>
 
 <details>
-<summary><strong>邮箱服务：六种 provider 与高级域名轮换</strong></summary>
+<summary><strong>邮箱服务：九种 provider 与高级域名轮换</strong></summary>
 <br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/email-service-dark.png">
@@ -102,6 +102,18 @@
 ```
 
 说明：**注册机本身只配置一层 HTTP 代理 URL**。若需要「先节点再家宽」等链式出口，在代理客户端（如 mihomo `dialer-proxy`）配置，对注册机透明。
+
+## 代理推荐
+
+[![IPWO 住宅代理：稳定连接、全球节点、多协议支持](docs/sponsors/ipwo-banner.png)](https://www.ipwo.net/?ref=githubregisterpanel)
+
+**IPWO 住宅代理**提供动态代理、静态代理及不限量代理服务，覆盖 **195+ 个国家和地区**，支持 **HTTP(S) 与 SOCKS5** 协议，适用于多种浏览器自动化和网络应用场景。
+
+对于使用 Camoufox、代理池或多任务浏览器工作流的开发者，IPWO 可作为可选的住宅代理资源，支持灵活配置网络出口与地区选择，适用于网页访问、数据采集、网络测试等场景。
+
+支持免费测试，90优惠码：**`0200`**。
+
+**[访问 IPWO 住宅代理](https://www.ipwo.net/?ref=githubregisterpanel)**
 
 ## 快速开始
 
@@ -153,10 +165,13 @@ Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（�
 
 | 字段 | 说明 |
 |------|------|
-| `email_provider` | `cloudflare` / `duckmail` / `yyds` / `mailnest` / `cloudmail` / `moemail` / `outlook_rt` / `inbucket` |
+| `email_provider` | `cloudflare` / `duckmail` / `yyds` / `mailnest` / `cloudmail` / `moemail` / `outlook` / `outlook_rt` / `inbucket` |
 | `outlook_rt_inventory` | Outlook MSA 库存路径（jsonl：`email`+`refresh_token`；或 `email----rt`） |
 | `outlook_rt_used_path` | 已用邮箱记录（可选；默认 `库存路径.used`） |
 | `outlook_rt_client_id` | 可选 Client ID；默认 Microsoft Authentication Broker 公共客户端 |
+| `outlook_accounts_file` | Outlook 卡池文件（行格式 `email----password----client_id----refresh_token`；默认 `keys/outlook_pending.txt`） |
+| `outlook_used_file` | 已用记录（留空默认 `keys/outlook_used.txt`）；仅建号资料提交前的失败邮箱可自动回收 |
+| `outlook_proxy` | 可选：IMAP 收信独立出口 |
 | `defaultDomains` | 临时邮域名（如二级 CF 域） |
 | `cloudflare_*` / `duckmail_*` 等 | 对应邮箱 API |
 | `cloudflare_randomize_subdomain` | 默认 `true`；为管理域名生成随机子域，要求泛域收信；不支持时设为 `false` |
@@ -205,6 +220,7 @@ Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（�
 | `GROK_STATIC_ASSET_CACHE` | 面板任务为 `1`，CLI 为空 | 面板启动链默认启用；命令行直启可设为 `1`，显式设 `0` 可关闭 |
 | `GROK_STATIC_CACHE_DIR` | `./log/static-asset-cache` | 静态缓存目录，文件权限 `0700` |
 | `GROK_STATIC_CACHE_MAX_MB` | `1024` | 静态缓存上限（MB），最低 `32` |
+| `GROK_CLIENT_VERSION` | `1.0.13` | CPA 导出与质量探测 chat 请求头的 `x-grok-client-version`；2026-10-22 之后注册的账号需 ≥ `1.0.13`，低版本报 “Grok CLI version outdated” |
 
 生成 token 示例：
 
@@ -343,8 +359,9 @@ python grok_register_ttk.py
 
 ### 邮箱服务与高级域名轮换
 
-- 顶部“邮箱服务”统一配置 `cloudflare`、`duckmail`、`yyds`、`mailnest`、`cloudmail`、`moemail`、`outlook_rt`、`inbucket`
+- 顶部“邮箱服务”统一配置 `cloudflare`、`duckmail`、`yyds`、`mailnest`、`cloudmail`、`moemail`、`outlook`、`outlook_rt`、`inbucket`
 - `outlook_rt` 从本地 jsonl 库存取号（非购买），用 MSA `refresh_token` 刷 Graph 收 xAI 验证码
+- `outlook` 直接使用本地卡池文件（每行 `email----password----client_id----refresh_token`），以 XOAUTH2 轮询 Outlook IMAP 收 xAI 验证码；只读取取号时基线之后的新邮件，基线探测失败会归还邮箱并停止该次取号。建号资料提交前的失败邮箱可经跨平台文件锁回收到待用池尾部；进入资料提交后保留已用记录，避免 SSO 或保存失败导致重复注册
 - `inbucket` 使用自建 [Inbucket](https://github.com/inbucket/inbucket) 实例：填实例地址和收信根域名即可，邮箱即建即用，无需注册 API；根域名可配多个轮换，并可按 `inbucket_random_levels` 叠加随机多级子域（需泛解析收信）
 - 切换服务商时只显示该服务实际支持的字段；保存后新的注册任务读取 `config.json`
 - 已保存的 API Key、JWT 和密码不会通过接口或页面回显；密钥输入留空会保留原值，必须点“清除”并保存才会删除
@@ -460,6 +477,8 @@ python scripts/check_bfs.py --token 'eyJ...'
 5. 并发建议从 2～3 起跳，过高易空页、Turnstile 卡住、代理打满  
 6. 「资料填写失败」有时是资料页人机未过，不一定是姓名密码写不进  
 7. 链式代理在客户端配，不在注册机 Python 里写死  
+8. chat 版本门槛：2026-10-22 之后注册的账号调用 chat 需 `x-grok-client-version ≥ 1.0.13`；CPA 导出与质量探测默认按 `1.0.13` 写头（可用 `GROK_CLIENT_VERSION` 覆盖），低版本会报 “Grok CLI version outdated”  
+9. 住宅出口：页面加载默认 `domcontentloaded` 并放宽等待；注册页偶发整页白屏是 x.ai 未下发静态 bundle，加长等待救不回，换出口会话或国家更快  
 
 ## 目录结构
 
@@ -572,6 +591,7 @@ A: 在控制台使用“账号补录”。待处理模式成功后自动出队�
 
 | 提交方向 | 内容 |
 |----------|------|
+| 0.6.0 Outlook 卡池与稳定性 | IMAP 收信、注册阶段回收保护、Windows 文件锁与日志兼容、CPA chat 版本头 `1.0.13`；降智只按 thinking 判定 |
 | 0.5.0 降智测试 | 短题（时钟夹角）+ 见到 thinking 掐流；`quality_probe_on_register` 默认关 |
 | 面板鉴权 | `MONITOR_TOKEN` + Bearer；UI 内 Token 输入；CORS 不开放 `*` |
 | 绑定安全 | 失败不回退 `0.0.0.0`；默认 `PANEL_INCLUDE_TAIL=0` |

@@ -569,7 +569,7 @@ return inputs.length + actions.length > 0;
         return False
 
 
-def _wait_signup_shell(timeout=8, log_callback=None, cancel_callback=None):
+def _wait_signup_shell(timeout=20, log_callback=None, cancel_callback=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
@@ -579,7 +579,7 @@ def _wait_signup_shell(timeout=8, log_callback=None, cancel_callback=None):
     return _page_has_email_form() or _page_shell_ready()
 
 
-def _wait_email_form(timeout=8, log_callback=None, cancel_callback=None):
+def _wait_email_form(timeout=20, log_callback=None, cancel_callback=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
@@ -607,7 +607,7 @@ def _reload_signup_and_open_email(log_callback=None, cancel_callback=None):
             except Exception:
                 pass
         sleep_with_cancel(1.2, cancel_callback)
-        _wait_signup_shell(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback)
+        _wait_signup_shell(timeout=20, log_callback=log_callback, cancel_callback=cancel_callback)
         if _page_has_email_form():
             if log_callback:
                 log_callback("[*] 空页恢复：reload 后已有邮箱框")
@@ -615,7 +615,7 @@ def _reload_signup_and_open_email(log_callback=None, cancel_callback=None):
         click_email_signup_button(
             timeout=10, log_callback=log_callback, cancel_callback=cancel_callback
         )
-        ok = _wait_email_form(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback)
+        ok = _wait_email_form(timeout=20, log_callback=log_callback, cancel_callback=cancel_callback)
         if log_callback:
             log_callback(f"[*] 空页恢复：重新点击邮箱注册 form_ready={ok}")
         return ok
@@ -625,7 +625,7 @@ def _reload_signup_and_open_email(log_callback=None, cancel_callback=None):
         return False
 
 
-def click_email_signup_button(timeout=10, log_callback=None, cancel_callback=None):
+def click_email_signup_button(timeout=25, log_callback=None, cancel_callback=None):
     deadline = time.time() + timeout
     first_attempt = True
     while time.time() < deadline:
@@ -788,8 +788,12 @@ def open_signup_page(log_callback=None, cancel_callback=None):
 
     # 等 SPA/CF 把壳渲染出来，再点邮箱注册
     sleep_with_cancel(1.0, cancel_callback)
+    # 我们自研：人化鼠标漂移，降低 Turnstile 触发概率
     _human_mouse_drift(1)
-    if not _wait_signup_shell(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback):
+    if log_callback:
+        log_callback(f"[*] 当前URL: {active_page().url if active_page() else ''}")
+    # 上游 v0.6.0：放宽注册页壳等待到 20s
+    if not _wait_signup_shell(timeout=20, log_callback=log_callback, cancel_callback=cancel_callback):
         if log_callback:
             log_callback("[!] 注册页壳为空，尝试 reload 恢复")
         if not _reload_signup_and_open_email(log_callback=log_callback, cancel_callback=cancel_callback):
@@ -804,7 +808,7 @@ def open_signup_page(log_callback=None, cancel_callback=None):
     click_email_signup_button(
         log_callback=log_callback, cancel_callback=cancel_callback
     )
-    if not _wait_email_form(timeout=8, log_callback=log_callback, cancel_callback=cancel_callback):
+    if not _wait_email_form(timeout=20, log_callback=log_callback, cancel_callback=cancel_callback):
         if log_callback:
             log_callback("[!] 点击邮箱注册后仍无输入框，reload 重试")
         if not _reload_signup_and_open_email(log_callback=log_callback, cancel_callback=cancel_callback):
@@ -1020,6 +1024,7 @@ def _wait_email_page_advanced(email, wait=25.0, cancel_callback=None):
     return False
 
 
+# 我们自研：人化输入流程较慢，邮箱提交超时保留 60s（上游 v0.6.0 为 25s）
 def fill_email_and_submit(timeout=60, log_callback=None, cancel_callback=None):
     raise_if_cancelled(cancel_callback)
     email, dev_token = _deps['get_email_and_token']()
@@ -1027,6 +1032,20 @@ def fill_email_and_submit(timeout=60, log_callback=None, cancel_callback=None):
         raise Exception("获取邮箱失败")
     if log_callback:
         log_callback(f"[*] 已创建邮箱: {email}")
+    try:
+        return _fill_email_body(email, dev_token, timeout, log_callback, cancel_callback)
+    except BaseException:
+        # 取号后在填邮箱/提交环节失败：把未注册的邮箱回收到池尾
+        _rel = _deps.get("release_email")
+        if _rel and email:
+            try:
+                _rel(email)
+            except Exception:
+                pass
+        raise
+
+
+def _fill_email_body(email, dev_token, timeout, log_callback, cancel_callback):
     deadline = time.time() + timeout
     last_diag_time = 0
     last_reclick_time = 0
