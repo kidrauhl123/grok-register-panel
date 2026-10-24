@@ -208,7 +208,7 @@ def random_subdomain_domain(apex: str) -> str:
             "home", "note", "post", "send", "hub", "net", "lab", "pro",
         ])
         label = f"{word}{random.randint(10, 99)}"
-    if len(parts) >= 3:
-        parts[0] = label
-        return ".".join(parts)
+    # 统一前置随机标签：不替换首段。
+    # 二级域（jung.edu.pl）若走替换会吃掉根域（-> obiorm.edu.pl），
+    # worker 的 matchPoolDomain 走最长后缀匹配，前置 label 即可正确归池。
     return f"{label}.{apex}"
