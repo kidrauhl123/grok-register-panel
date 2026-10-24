@@ -111,3 +111,68 @@ xAI 对这些 IP + 临时域的组合做了「接受但静默丢弃」。
 1. **换邮箱提供商**：xAI 对自建临时域可能整体静默；改用 Outlook/Graph 真实邮箱池（`mailbridge/graph_mail.py` 已具备 `to_matches` + `extract_code`）
 2. **换出口**：需要能真正更换 IP 的住宅代理（当前 mihomo 228 节点只有 3 个 server，IP 固定）
 3. 若要继续用 jung.edu.pl，需先确认 xAI 是否已把该域列入静默丢弃名单
+
+
+## 2026-10-24 18:40 最终诊断（已闭环）
+
+### 结论一：验证码通道已经打通（可复现）
+
+`/tmp/reg_final.py` + `/tmp/outlook_ok.json` 已验证：
+
+| 环节 | 状态 |
+|---|---|
+| 开注册页 → Sign up with email | OK |
+| 填邮箱 → Sign up | OK |
+| 拿 `{"ok":true}` + `Verify your email` | OK |
+| Graph 拉 Outlook 收件箱取码（`Grok confirmation code: 860-138`） | OK |
+| 填 `input[name=code]` → 点 `button[type=submit]`（文案 `Confirm email`） | OK |
+| 服务端响应 | `Existing account found`（该 outlook 已注册过） |
+
+**关键 DOM（此前踩坑点）**：
+```
+input[name=code][maxlength=6][inputmode=numeric][autocomplete=one-time-code]
+button[type=submit]  文案 = "Confirm email"      # 不是 Verify / Continue / Submit
+```
+
+### 结论二：xAI 对 jung.edu.pl 静默丢弃邮件（40 小时零投递）
+
+worker 全站统计（`GET /api/inbox?t=<ADMIN_PASSWORD>&limit=500`）：
+
+| 指标 | 值 |
+|---|---|
+| 最新成功投递 | **2026-10-23 05:05** |
+| 当前时间 | 2026-10-24 18:38 |
+| 今日有投递的邮箱数 | **0** |
+
+同期 `send-verification-code` 多次返回 `{"ok":true}`，页面也进入 `Verify your email`。
+投递链路本身正常（MX → CF Email Routing → worker → D1，历史 424 封为证）。
+
+**因此：`{"ok":true}` ≠ 邮件已发。xAI 对 jung.edu.pl 做「接受但静默丢弃」。**
+
+### 结论三：三个不同的错误码，含义不同
+
+| code | 含义 | 处理 |
+|---|---|---|
+| `{"ok":true}` | 已受理（但不保证投递） | 继续 |
+| `account:email-signup-unavailable` | 出口 IP 邮箱注册配额耗尽（约 2 次/窗口，约 1.5h 恢复） | 换节点 |
+| `email:send-validation-code-rate-limited` | 该邮箱地址被限速 | 换邮箱 |
+
+### 结论四：Outlook 池现状
+
+- `openai-register/turb.sqlite3` → `email_pool` 表 100 条，74 条 Graph token 可用
+- **74/74 全部已注册过 xAI**（收件箱里有 `Grok confirmation code`）
+- 需要新的、未注册过 xAI 的邮箱来源
+
+### 结论五：达成目标还缺什么
+
+10 个号 = 10 个未注册过 xAI 的邮箱 + 每个号一个还有配额的出口 IP。
+
+- 出口 IP：池里还有 ~100 个未试端口，每个约 2 次配额 → 够用
+- **邮箱：当前没有库存**，这是唯一硬缺口
+
+可选来源（按可行性排序）：
+1. **iCloud HME 邮箱池**（`/home/kali/jung/icloud-mail`，容器 `icloud-api` 在跑）——
+   `POST /api/v1/pool/claim` + `Authorization: Bearer pool_xxx`，需要项目 Key；
+   管理员 session + `X-CSRF-Token` 可查/建 Key
+2. 采购新的 Outlook 账号（`client_id=9e5f94bc-e8a4-4e73-b8be-63364c29d753` 这套是第三方 Graph 应用）
+3. 给 jung.edu.pl 换一个 xAI 还没拉黑的域名（需先验证 xAI 是否按域判定）
