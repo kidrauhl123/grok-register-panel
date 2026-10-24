@@ -221,3 +221,47 @@ worker 全站统计（`GET /api/inbox?t=<ADMIN_PASSWORD>&limit=500`）：
 Outlook Graph 通道**已验证可用且稳定**（取码 4/4 成功）。
 若修 CF 太慢，直接用 Outlook/Graph 做取码即可绕开这个问题 ——
 唯一缺口是「未注册过 xAI 的 Outlook 账号库存」。
+
+
+## 19:10 补充证据：CF 路由规则在，但不再投递到 worker
+
+### SMTP 层实测（contabo IPv4 直连 route1.mx.cloudflare.net:25）
+
+```
+250 2.1.0 Ok          <- MAIL FROM
+250 2.1.0 Ok          <- RCPT TO
+354 Start mail input
+550 5.7.26 Cannot forward emails that are not authenticated
+```
+
+`5.7.26 Cannot forward emails that are not authenticated` 说明：
+- **Email Routing 的 catch-all 规则仍然存在**（否则会是 550 5.1.1 user unknown）
+- 但 CF 现在要求发件方通过 SPF/DKIM/DMARC 认证才转发
+- 未认证 → 直接 550
+
+### 但这不是全部
+
+Outlook Graph（真实认证发件方，SPF/DKIM 齐全）发信：
+- `POST /v1.0/me/sendMail` → 202 已接受
+- 发件箱 `saveToSentItems: true` 也确认发出
+- **10 轮 × 8s 轮询，worker 侧 0 投递**
+- **发件方无退信**
+
+=> 认证发件方的邮件也被吞了，所以问题在 **worker 绑定**，不在 SPF。
+
+### 两种可能（需 CF 控制台确认）
+
+1. Email Routing 的 catch-all action 被改成了 `drop` 或指向了不存在的 worker
+2. worker 的 route 绑定丢失（`mail-worker-deploy.md` 记过：PATCH /settings 的
+   bindings 是全量替换，容易漏）
+
+### 修复后如何验证（一条命令）
+
+```python
+# 用已可用的 Outlook Graph 发一封到新箱，8s 内应能查到
+# 代码见本文件 19:00 节的对照实验
+```
+
+### 不依赖 CF 的备选
+
+Outlook Graph 通道已验证稳定（取码 4/4）。绕开 CF 只需解决邮箱库存。
