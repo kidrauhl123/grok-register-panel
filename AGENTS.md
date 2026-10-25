@@ -6,7 +6,7 @@ credentials as fixtures or examples.
 
 ## Project Scope
 
-Grok Register + Live Panel is a Camoufox-based registration workflow with a
+Grok Register + Live Panel is a browser-automation registration workflow with a
 local operations panel. It is intended for authorized research, integration,
 and personal environments. Do not add features intended to evade access
 controls, scrape or distribute third-party proxies, or conceal unauthorized
@@ -15,7 +15,9 @@ bulk abuse.
 ## Architecture And Ownership
 
 - `register_flow.py`, `browser_session.py`, and `camoufox_adapter.py` own the
-  browser registration flow, session lifecycle, exit checks, and Camoufox
+  browser registration flow, session lifecycle, exit checks, and browser engine dispatch
+  (`roxy` / `chromium` / `camoufox`; see `roxy_browser.py` for the RoxyChrome + `lumi.conf`
+  fingerprint injection path)
   integration.
 - `run_batch_headless.py` starts a batch. `batch_supervisor.py` supervises its
   child process, restarts driver crashes or idle runs, and resumes only the
@@ -36,7 +38,7 @@ bulk abuse.
   is on (default on). Thinking text is required; billed reasoning_tokens alone is 降智. Panel exports must not include access tokens. Prefer home
   proxies from `proxy_store.worker_proxy_details()`.
 - `advanced_proxy.py` plus `proxy_protocols.py` / `proxy_protocol_runtime.py`
-  turn VLESS/SS/Trojan/Hysteria2/TUIC into a local HTTP endpoint for Camoufox.
+  turn VLESS/SS/Trojan/Hysteria2/TUIC into a local HTTP endpoint for the browser.
 - `grok2api_remote.py` owns chenyme grok2api admin remote import (Grok Build OAuth accounts and Web SSO).
 - `webui/proxy_store.py` owns proxy import, normalization, health, cooldown, and
   redacted API views. `webui/email_provider_store.py` owns provider config and
@@ -73,6 +75,7 @@ bulk abuse.
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+# 默认引擎 roxy 需本机安装 RoxyBrowser；Camoufox 为可选降级
 .venv/bin/python -m camoufox fetch
 cp config.example.json config.json
 

@@ -9,7 +9,8 @@ Windows 跑批不依赖 Xvfb，也不需要 SSH 到 Linux 上的 `127.0.0.1:82xx
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
 ```
 
-会创建 `.venv`、安装 `requirements.txt`、执行 `python -m camoufox fetch`。
+会创建 `.venv`、安装 `requirements.txt`。浏览器引擎默认 `roxy`（需先安装 RoxyBrowser）；
+若用 Camoufox 降级方案，脚本会执行 `python -m camoufox fetch`。
 再编辑 `config.json`（邮箱服务、默认 proxy）。
 
 ## 跑批 / 面板

@@ -12,7 +12,8 @@ cd grok-register-panel
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m camoufox fetch
+# 默认引擎 roxy 需要本机已安装 RoxyBrowser；Camoufox 为可选降级方案
+.venv/bin/python -m camoufox fetch   # 仅 browser_engine=camoufox 时需要
 ```
 
 `requirements.txt` 固定直接依赖版本；`requirements.lock.txt` 是发布环境的完整依赖快照。
@@ -28,12 +29,13 @@ python3 -m venv .venv
 ### 平台运行规则
 
 - Linux 无 `DISPLAY` / `WAYLAND_DISPLAY` 时，面板和编排器自动使用 `xvfb-run`。
-- Linux 有显示会话以及 macOS 直接启动 Camoufox，不调用 Xvfb。
+- Linux 有显示会话以及 macOS 直接启动浏览器内核，不调用 Xvfb。
+- 默认引擎为 RoxyChrome（指纹注入，Turnstile 必过）；`browser_engine` 可切 `chromium` / `camoufox`。
 - `GROK_USE_XVFB=1` 可在 Linux 强制使用 Xvfb，`GROK_USE_XVFB=0` 可明确直启；默认 `auto`。
 - 任务解释器优先使用项目 `.venv`，缺失时复用启动面板的 Python；外部共享虚拟环境可用 `GROK_PYTHON_BIN` 显式固定。
 - Linux 容器必须挂载 procfs 到 `/proc`。缺失时面板会拒绝启停任务并给出明确错误，避免在无法确认进程状态时重复启动。
 - Windows 使用 `.venv\\Scripts\\python.exe` 启动面板与批处理，不调用 Xvfb。
-- Windows supervisor 使用后台管道读取，不依赖仅支持 socket 的 `selectors`；停止任务时会递归结束 Camoufox 子进程树。
+- Windows supervisor 使用后台管道读取，不依赖仅支持 socket 的 `selectors`；停止任务时会递归结束浏览器子进程树（含 RoxyChrome）。
 - Windows 浏览器 Profile 位于当前用户的 `%LOCALAPPDATA%\\GrokRegister\\grok-register-camoufox`，避免仓库目录或共享临时目录泄露会话数据。
 - Windows 默认 `GROK_HEADLESS=1` + 软件渲染；需要有头窗口时设 `GROK_HEADED=1`。
 - POSIX：`PLAYWRIGHT_NODEJS_PATH` 指向 `scripts/playwright-node`，`GROK_PLAYWRIGHT_NODE` 必须是真实 node 二进制（禁止等于 wrapper，避免 exec 自己）。会对 wrapper 做 best-effort `chmod +x`。

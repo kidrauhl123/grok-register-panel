@@ -38,6 +38,20 @@ import base64
 import hashlib
 import json
 import os
+
+# curl_cffi 会隐式读取 HTTP(S)_PROXY / ALL_PROXY 环境变量，与显式传入的
+# proxies= 叠加时会触发 "TLS connect error: invalid library"（BoringSSL 与
+# 环境代理同时生效导致握手状态损坏）。本模块所有出网请求都自带 proxies，
+# 因此启动时先清掉环境代理，避免双重代理。
+for _proxy_env in (
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+):
+    os.environ.pop(_proxy_env, None)
 import re
 import secrets
 import sys

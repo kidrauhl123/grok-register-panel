@@ -5,9 +5,9 @@
 **基于双上游演进的独立增强版**  
 直接上游：[lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel) (MIT) · 最原版上游：[AaronL725/grok-register](https://github.com/AaronL725/grok-register) (MIT)
 
-由 [kidrauhl123](https://github.com/kidrauhl123) 维护与深度增强：Camoufox 批量注册 + Live 监控面板 + **KDA 代理战力评分体系** + **1x~10x 节点加权流量计量** + **订阅/试用优惠状态自动探测** + VLESS/SS (sing-box) 接入 + 远端导入门禁。
+由 [kidrauhl123](https://github.com/kidrauhl123) 维护与深度增强：**RoxyChrome 指纹注入**批量注册 + Live 监控面板 + **KDA 代理战力评分体系** + **1x~10x 节点加权流量计量** + **订阅/试用优惠状态自动探测** + VLESS/SS (sing-box) 接入 + 远端导入门禁。
 
-批量注册 Grok 账号（Camoufox）+ Web 监控面板  
+批量注册 Grok 账号（RoxyChrome 指纹注入）+ Web 监控面板  
 任务编排 / 代理池 / 邮箱服务 / 账号补录 / BFS 检测 / **降智测试** / **Token 鉴权** / **战力评分**
 
 [Discussions](https://github.com/kidrauhl123/grok-register-panel/discussions) · [Issues](https://github.com/kidrauhl123/grok-register-panel/issues)
@@ -35,7 +35,7 @@
 |------|------|
 | 注册全链路 | 邮箱 OTP → 资料页 → Turnstile → SSO → Device / OAuth → 写入 CPA / Grok2API |
 | 多邮箱后端 | **推荐 Outlook RT 库存**；也支持 DuckMail、MailNest、Cloudflare Worker 邮、YYDS、CloudMail、MoeMail、Inbucket 自建。域名邮箱不作为主路径 |
-| 反检测浏览器 | [Camoufox](https://camoufox.com/)（Gecko 层指纹） |
+| 反检测浏览器 | **RoxyChrome**（Chromium 155 魔改内核，编译期指纹注入）+ Camoufox（可选） |
 | 出口预检 | 启动前解析出口 IP / ASN，命中黑名单直接换口；**优先家宽** |
 | **降智测试** | 默认入库短测；必须有思考文本才算正常。只扣 `reasoning_tokens`、没有 thinking delta 记为降智 |
 | **BFS 检测** | 解码 access_token / SSO JWT，检查是否含 `bfs` claim；注册后自动标记，面板可批量扫描 CPA |
@@ -85,7 +85,7 @@
 
 ```text
 ┌─────────────────┐     HTTP proxy      ┌──────────────────┐
-│  Camoufox 注册机 │ ──────────────────► │ 本地代理 mixed 口 │
+│ RoxyChrome 注册机│ ──────────────────► │ 本地代理 mixed 口 │
 │  (多 worker)     │   127.0.0.1:79xx    │ (可选链式 dialer) │
 └────────┬────────┘                     └────────┬─────────┘
          │                                        │
@@ -103,17 +103,107 @@
 
 说明：**注册机本身只配置一层 HTTP 代理 URL**。若需要「先节点再家宽」等链式出口，在代理客户端（如 mihomo `dialer-proxy`）配置，对注册机透明。
 
-## 代理推荐
+## 浏览器引擎：为什么必须是 RoxyChrome
 
-[![IPWO 住宅代理：稳定连接、全球节点、多协议支持](docs/sponsors/ipwo-banner.png)](https://www.ipwo.net/?ref=githubregisterpanel)
+### 问题
 
-**IPWO 住宅代理**提供动态代理、静态代理及不限量代理服务，覆盖 **195+ 个国家和地区**，支持 **HTTP(S) 与 SOCKS5** 协议，适用于多种浏览器自动化和网络应用场景。
+xAI 注册页的资料提交被 **Turnstile** 硬门禁拦住。反编译 `sign-up` 的 chunk 后可见：
 
-对于使用 Camoufox、代理池或多任务浏览器工作流的开发者，IPWO 可作为可选的住宅代理资源，支持灵活配置网络出口与地区选择，适用于网页访问、数据采集、网络测试等场景。
+```js
+ex = async e => {
+    if (!B) return track("account_signup_error",
+                         {error_type: "turnstile_failed", step: "credentials"}), eg(), !1;
+    if (!Z.data.code) return !1;
+    await l.signUp.createAccount({
+        email: e.email, password: e.password,
+        givenName: e.givenName, familyName: e.familyName,
+        emailValidationCode: Z.data.code,
+        turnstileToken: B,                 // ← 就是这个 B
+        marketingEmailOptIn: t,
+    });
+};
+```
 
-支持免费测试，90优惠码：**`0200`**。
+`B` 由 `<Turnstile onToken={K}/>` 组件通过 `turnstile.render()` 的 callback 注入：
 
-**[访问 IPWO 住宅代理](https://www.ipwo.net/?ref=githubregisterpanel)**
+```js
+"Turnstile", ({onToken: e, errorCount: d, highlight: u = !1}) => {
+    const _ = useContext(TurnstileCtx);
+    if (void 0 === _ || null === h.current) return;
+    _.turnstile.render(h.current, {
+        sitekey: _.sitekey,
+        callback: t => { m(null); e(t); },          // ← K(token)，即 setB
+        "error-callback": e => { reportTurnstileError(e); m(d ?? 0); return true; },
+    });
+};
+```
+
+在 **Xvfb + SwiftShader 软件渲染**的普通 Chromium 下，Cloudflare 直接返回
+error code **`600010`**（generic challenge failure / bot behavior detected）：
+widget 容器 `cf-chl-widget-*` 建出来了，但里面只有一个空的
+`cf-turnstile-response` hidden input，token 永远为空 —— 于是提交函数第一行
+就 `return`，**一个网络请求都不发**。
+
+实测对照：
+
+| 环境 | WebGL renderer | Turnstile |
+|------|----------------|-----------|
+| 普通 Chromium + Xvfb | `SwiftShader Device (Subzero)` | `600010`，token 空 |
+| RoxyChrome + lumi.conf | `ANGLE (AMD, AMD Radeon(TM) Vega 8 ...)` | 放行，token 794 字节 |
+
+### 方案
+
+**RoxyChrome** 是 RoxyBrowser 自带的 Chromium 155 魔改内核，编译期挂载
+`fingerprint_inject_service`，启动时读取 `<user-data-dir>/lumi.conf`
+（AES-256-GCM 加密的 JSON）注入完整指纹：
+
+- UA / `navigator.platform` / `hardwareConcurrency` / `deviceMemory`
+- **WebGL vendor + renderer**（关键：替换掉 SwiftShader）
+- Canvas / AudioContext / ClientRects 噪声
+- `screen` / `userAgentMetadata` / WebRTC / 时区 / 语言
+- 代理（`fproxy` 字段，浏览器内核层直连，不经环境变量）
+
+注入后 Cloudflare 视为正常桌面环境，Turnstile 立即放行。
+
+`lumi.conf` 加密参数（逆自 `dist/main.mjs` 的 `createFingerprintConfigFile`）：
+
+```js
+createCipheriv("aes-256-gcm", "402ead7d23b43b6d1e0528d4f99c59bd",
+                                 "3a105229aa31")
+// 输出 base64(ciphertext || authTag)
+```
+
+密钥与 IV 都是 **ASCII 原始字节**（32 / 12 字节），不是 hex 解码。
+
+### 使用
+
+```bash
+# 引擎选择（config.json 或环境变量）
+GROK_BROWSER_ENGINE=roxy      # roxy（默认推荐）| chromium | camoufox
+
+# RoxyChrome 路径（默认自动探测 ~/.config/RoxyBrowser/chrome-bin/*/RoxyChrome）
+ROXY_CHROME_EXECUTABLE=/path/to/RoxyChrome
+```
+
+`roxy_browser.py` 负责：
+
+1. 生成 `lumi.conf`（随机 GPU profile / 噪声种子 / 指纹组合）
+2. 启动 `RoxyChrome --remote-debugging-port=<free>`
+3. 等 CDP 就绪，交给 Playwright `connect_over_cdp()` 接管
+4. 退出时清理子进程与临时 profile
+
+> **注意**：RoxyChrome 的代理只认 `lumi.conf` 的 `fproxy` 字段，
+> `--proxy-server` 会被忽略。`roxy_browser.py` 已自动把 `config.proxy`
+> 写进 `fproxy`。
+
+### 其他引擎
+
+| 引擎 | 适用场景 |
+|------|----------|
+| `roxy` | **默认**。Turnstile 必过，指纹最完整 |
+| `chromium` | 无 RoxyBrowser 时的降级方案，Turnstile 会被 600010 拦 |
+| `camoufox` | Gecko 内核；Castle 对 Gecko 指纹判高风险，已不推荐 |
+
 
 ## 快速开始
 
@@ -142,7 +232,9 @@ source .venv/bin/activate          # Linux / macOS
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 
 pip install -r requirements.txt
-python -m camoufox fetch           # 必须：下载浏览器引擎（约数百 MB）
+# 浏览器引擎：默认走 RoxyChrome（需已安装 RoxyBrowser）
+# 若要用 Camoufox 降级方案，再执行：
+# python -m camoufox fetch         # 下载 Gecko 内核（约数百 MB）
 
 cp config.example.json config.json
 # 编辑 config.json：邮箱、proxy、cpa_auth_dir 等
@@ -159,12 +251,14 @@ powershell -ExecutionPolicy Bypass -File scripts\run_windows_panel.ps1
 
 Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（那是 bash 包装）。运行时会解析 `node.exe` 或 Playwright 自带 Node，并用带引号的 `NODE_OPTIONS --require` 注入 EPIPE 保护。代理请写 **Windows 本机可达** 的 URL（例如 `socks5://user:pass@gate.example:1000`），不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。
 
-> `pip install` 只装 Python 依赖；**不执行 `camoufox fetch` 无法启动浏览器**。
+> `pip install` 只装 Python 依赖。**默认引擎 `roxy` 需要本机已安装 RoxyBrowser**；
+> 未安装时把 `browser_engine` 设为 `camoufox` 并执行 `python -m camoufox fetch`。
 
 ### 配置（`config.json`）
 
 | 字段 | 说明 |
 |------|------|
+| `browser_engine` | `roxy`（默认，Turnstile 必过）/ `chromium` / `camoufox` |
 | `email_provider` | `cloudflare` / `duckmail` / `yyds` / `mailnest` / `cloudmail` / `moemail` / `outlook` / `outlook_rt` / `inbucket` |
 | `outlook_rt_inventory` | Outlook MSA 库存路径（jsonl：`email`+`refresh_token`；或 `email----rt`） |
 | `outlook_rt_used_path` | 已用邮箱记录（可选；默认 `库存路径.used`） |
@@ -205,7 +299,9 @@ Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（�
 | `BLACKLIST_STATE_FILE` | `./log/blacklist_state.json` | 运行时 ASN 黑名单状态 |
 | `GROK_BATCH_IDLE_TIMEOUT` | `360` | batch 子进程连续无输出多少秒后自动重建（最小 60 秒） |
 | `GROK_BATCH_MAX_RESTARTS` | `2` | 单批发生驱动崩溃或卡死时最多自动恢复次数 |
-| `GROK_BROWSER_START_ATTEMPTS` | `2` | 同一代理的 Camoufox 启动尝试次数，范围 1-4 |
+| `GROK_BROWSER_ENGINE` | `roxy` | 浏览器引擎：`roxy` / `chromium` / `camoufox` |
+| `ROXY_CHROME_EXECUTABLE` | 自动探测 | RoxyChrome 可执行文件路径 |
+| `GROK_BROWSER_START_ATTEMPTS` | `2` | 同一代理的浏览器启动尝试次数，范围 1-4 |
 | `GROK_PROXY_BOOT_ROTATIONS` | `3` | 浏览器启动失败后最多更换的代理数，范围 0-10 |
 | `GROK_SLOT_RETRIES` | `1` | 单账号槽位软失败时的重试次数，范围 0-3 |
 | `GROK_ORCH_MAX_CONSECUTIVE_FAILURES` | `2` | 连续异常批次达到该值时停止编排，范围 1-10 |
@@ -302,7 +398,7 @@ xvfb-run -a python -u run_batch_headless.py 20 3
 python -u run_batch_headless.py 20 3
 ```
 
-单批由独立监督进程运行。Playwright/Camoufox 驱动崩溃，或连续超过
+单批由独立监督进程运行。Playwright / RoxyChrome 驱动崩溃，或连续超过
 `GROK_BATCH_IDLE_TIMEOUT` 没有输出时，监督进程会结束故障子进程并按原子进度文件
 继续剩余数量；已经写入的账号、SSO 和 CPA 文件不会回滚。
 
@@ -486,7 +582,8 @@ python scripts/check_bfs.py --token 'eyJ...'
 .
 ├── grok_register_ttk.py       # GUI + CLI 主程序
 ├── register_flow.py           # 注册页流程 / Turnstile
-├── browser_session.py         # 会话、出口探测、ASN 黑名单
+├── browser_session.py         # 会话、引擎分派、出口探测、ASN 黑名单
+├── roxy_browser.py            # RoxyChrome 启动 + lumi.conf 指纹注入 + CDP 接管
 ├── sso_to_auth_json.py        # SSO → OAuth / 写 CPA（auth 文件 0600）
 ├── quality_probe.py           # 短题降智 / 风控探测（开关打开才入库测、面板复测）
 ├── camoufox_adapter.py
@@ -552,6 +649,34 @@ A: CPA 已达旧目标。面板填大 **再跑 N 个** 再启动；编排器用 
 **Q: 全是「无法解析出口 IP」？**  
 A: 打开顶部“代理池”查看异常和冷却原因，重新检测后只启用健康条目。旧版单代理仍可用 `curl -x http://127.0.0.1:端口 https://httpbin.org/ip` 单独探活。
 
+**Q: 资料页填完了点提交没反应，日志里 `sso_timeout`？**
+A: Turnstile 没拿到 token。看日志有没有 `cf-turnstile-response` 为空、或 console 里
+`600010`。根因是浏览器指纹被 Cloudflare 判为自动化（Xvfb 下 WebGL 是
+`SwiftShader Device (Subzero)`）。把 `browser_engine` 设为 `roxy` 并确认
+RoxyBrowser 已安装；详见上文「浏览器引擎」章节。
+
+**Q: `lumi.conf` 生成了但 WebGL 还是 SwiftShader？**
+A: 字段名必须用 Chrome 分支的 `WebGL`（大写 W），不是 `webGL`；且
+`lumi.conf` 要放在 `--user-data-dir` 的根目录。`roxy_browser.py` 已按
+`dist/main.mjs` 的 `$d()` 结构对齐。
+
+**Q: RoxyChrome 起来了但页面 `ERR_CONNECTION_REFUSED`？**
+A: RoxyChrome **忽略 `--proxy-server`**，代理只认 `lumi.conf` 的 `fproxy`
+字段。确认 `config.proxy` 已写进 `fproxy`（`roxy_browser.py` 自动处理）。
+
+**Q: `Cannot run the event loop while another loop is running`？**
+A: 浏览器重试时上一轮 Playwright 连接/事件循环没清干净。已在
+`browser_session._teardown_pw_connection()` 修复；若自行改过启动逻辑请保留该调用。
+
+**Q: SSO 换 token 报 `TLS connect error: invalid library`？**
+A: `curl_cffi` 隐式读取 `HTTP(S)_PROXY` 环境变量，与显式 `proxies=` 叠加会
+破坏 BoringSSL 握手。`sso_to_auth_json.py` 已在模块加载时清除环境代理。
+
+**Q: 降智测试显示 `hard` 但账号明明能聊？**
+A: 先看 `output_tokens`。若几千 token 且 `think=False`，是服务端真的没给
+thinking delta（真降智）。若返回 426 `Grok CLI version outdated`，是缺
+`x-grok-client-version` 头，不是降智——把 `GROK_CLIENT_VERSION` 设到 `1.0.13+`。
+
 **Q: 提示“面板代理池没有健康且启用的代理”？**
 A: 导入项尚未检测、已停用、检测失败或仍在冷却。先在代理池页面执行“检测全部”；面板池已配置时不会回退复用旧文件中的坏代理。
 
@@ -615,11 +740,10 @@ A: 在控制台使用“账号补录”。待处理模式成功后自动出队�
 
 - [grok2api-egress-enhancements](https://github.com/lij768423-svg/grok2api-egress-enhancements) — grok2api 出口增强补丁：固定代理快速恢复 + 出口质量守护（被动 Token/s 熔断、硬阈值隔离、最低健康节点、管理面板）
 
-## 友情链接
+## 相关链接
 
-- [介绍页](https://lij768423-svg.github.io/grok-register-panel/) — 一页看面板、安装和声明
-- [Discussions](https://github.com/lij768423-svg/grok-register-panel/discussions) — 版本公告、踩坑和想法
-- [LINUX DO](https://linux.do) — 新的理想型社区
+- [Discussions](https://github.com/kidrauhl123/grok-register-panel/discussions) — 版本公告、踩坑和想法
+- [Issues](https://github.com/kidrauhl123/grok-register-panel/issues) — 问题反馈
 
 ## License
 
@@ -630,7 +754,8 @@ A: 在控制台使用“账号补录”。待处理模式成功后自动出队�
 
 - **最原版上游**：[AaronL725/grok-register](https://github.com/AaronL725/grok-register) — 感谢原作者开创 Camoufox 浏览器注册流原型
 - **直接上游**：[lij768423-svg/grok-register-panel](https://github.com/lij768423-svg/grok-register-panel) — 感谢提供 Web 监控面板、sing-box 外部代理基础与任务编排体系
-- [Camoufox](https://camoufox.com/) — 高度拟真的反检测浏览器核心
+- [Camoufox](https://camoufox.com/) — 可选的反检测浏览器内核（本仓库默认使用 RoxyChrome）
+- [RoxyBrowser](https://www.roxybrowser.com/) — 提供 Chromium 魔改内核与本地指纹注入能力
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 等下游生态
 - 社区里分享风控字段与工程经验的各位
 

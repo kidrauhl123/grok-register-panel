@@ -6,6 +6,16 @@ This repository is an independently maintained and enhanced version derived from
 
 ## Key Enhancements in this Repository
 
+- **RoxyChrome Browser Engine (Turnstile bypass)**:
+  - Chromium 155 modified kernel with compile-time `fingerprint_inject_service`.
+  - Reads `<user-data-dir>/lumi.conf` (AES-256-GCM encrypted JSON) and injects
+    UA / navigator / screen / **WebGL** / Canvas / AudioContext / ClientRects /
+    WebRTC / timezone / locale / proxy.
+  - Solves Cloudflare Turnstile error `600010` (bot behavior detected) caused by
+    `SwiftShader Device (Subzero)` software rendering under Xvfb. After injection
+    the widget issues a 770~800 byte token and the sign-up submit proceeds.
+  - Configurable via `browser_engine` (`roxy` / `chromium` / `camoufox`) and
+    `ROXY_CHROME_EXECUTABLE`.
 - **Proxy Intelligence & KDA Scoring**:
   - Battle-tested KDA rating system based on successes, failures, and consecutive blocks.
   - Dynamic weighted sorting, MVP rank 1 badge, and real-time win-rate tracking.

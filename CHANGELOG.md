@@ -4,18 +4,40 @@
 
 ### Added
 
-- Import VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks (and Base64 subscriptions). Camoufox still uses HTTP; `sing-box` is started locally.
+- **RoxyChrome 浏览器引擎**：Chromium 155 魔改内核 + `lumi.conf` 指纹注入，
+  绕过 Turnstile `600010`。注入 UA / navigator / screen / **WebGL** / Canvas /
+  AudioContext / ClientRects / WebRTC / 时区 / 语言 / 代理。新增 `roxy_browser.py`。
+- `browser_engine` 配置项与 `GROK_BROWSER_ENGINE` 环境变量：`roxy` / `chromium` / `camoufox`。
+- `ROXY_CHROME_EXECUTABLE` 环境变量（默认自动探测 `~/.config/RoxyBrowser/chrome-bin/*/RoxyChrome`）。
+- Import VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks (and Base64 subscriptions). HTTP 代理仍走 `camoufox`/`chromium`；`sing-box` 在本地启动。
 - Optional chenyme grok2api remote import: `grok2api_auto_add_remote` plus admin credentials push Grok Web SSO to the reverse proxy.
 - 代理节点 KDA 评分、连胜/连败计分板、加权流量计费（1x–10x 倍率）、复合排序与 MVP 徽章。
 - 人化操作引擎：键盘动力学、鼠标漂移、hover、Turnstile 抖动、表单真实停顿。
 - Grok 账号订阅/试用优惠状态检查与客户端版本号保底（`GROK_VERSION = 1.0.46`）。
 - 恢复链路：远端 Premsir 导入与 SSO 转换时的质量闸联动。
 
+### Fixed
+
+- **Turnstile token 为空导致资料页提交无网络请求**：`ex()` 里 `if(!B) return`
+  直接短路。根因是 Xvfb 下 WebGL 为 `SwiftShader Device (Subzero)`，Cloudflare
+  判为自动化并返回 `600010`。改用 RoxyChrome 注入真实 GPU 指纹后 token 长度
+  770~800 字节，提交正常。
+- **`Cannot run the event loop while another loop is running`**：浏览器重试时
+  上一轮 Playwright 连接与 asyncio loop 未释放。新增
+  `browser_session._teardown_pw_connection()`，在每次启动前清理。
+- **`TLS connect error: invalid library`**：`curl_cffi` 隐式读取
+  `HTTP(S)_PROXY` 环境变量，与显式 `proxies=` 叠加破坏 BoringSSL 握手。
+  `sso_to_auth_json.py` 在模块加载时清除环境代理。
+- **RoxyChrome 忽略 `--proxy-server`**：代理只认 `lumi.conf` 的 `fproxy` 字段，
+  `roxy_browser.py` 自动把 `config.proxy` 写入。
+
 ### Changed
 
 - 降智测试只按有没有 thinking **文本**判定：有 thinking 为正常，没有为降智。账单里的 `reasoning_tokens` 单独出现不算思考。
-- `quality_probe_on_register` 默认打开。
+- `quality_probe_on_register` 默认打开；但仅当 `cpa_auto_add=true` 时才会真正执行
+  （需要 access_token 才能打 grok.com 质检接口）。
 - `fill_email_and_submit` 超时保持 60s（人化流程较慢）；注册页壳等待放宽到 20s（对齐上游）。
+- README 按当前实现重写：移除上游代理服务商推广，补充 RoxyChrome 引擎章节与 Turnstile 排障 FAQ。
 
 ## 0.6.0 - 2026-10-24（已合入上游）
 
