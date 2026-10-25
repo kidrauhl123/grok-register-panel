@@ -25,8 +25,6 @@ from browser_session import (
 )
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
-# 提交邮箱前等待 Castle 反滥用 token 生成的最长秒数
-CASTLE_WAIT_SECONDS = float(os.environ.get("CASTLE_WAIT_SECONDS", "20") or 20)
 
 
 def _hint_is_page_error(hint: str) -> bool:
@@ -836,46 +834,6 @@ return !!(givenInput && familyInput && passwordInput);
         return False
 
 
-SIGNUP_UNAVAILABLE_PATTERNS = (
-    "email sign-up isn't available",
-    "email sign-up is not available",
-    "email signup isn't available",
-    "email signup is not available",
-    "sign up another way",
-    "电子邮件注册不可用",
-    "电子邮件注册暂不可用",
-)
-
-
-def detect_signup_unavailable():
-    """检测「出口 IP 的邮箱注册配额已耗尽」。
-
-    xAI 的两种失败必须分开处理：
-      - 域名被拒（account:email-domain-rejected）
-        文案 `Sign-ups from this email domain aren't allowed.`
-        => 该域名不可用，拉黑域名
-      - 出口受限（account:email-signup-unavailable）
-        文案 `Email sign-up isn't available right now. Sign up another way.`
-        => 域名没问题，换出口 IP
-
-    混为一谈会把好域名错误拉黑，并把配额问题归咎于代理节点。
-    返回命中的文案；未命中返回空字符串。
-    """
-    if not page:
-        return ""
-    try:
-        body = page.run_js(
-            "() => (document.body && (document.body.innerText || '')) || ''"
-        )
-    except Exception:
-        return ""
-    low = str(body or "").replace("\u2019", "'").lower()
-    for pat in SIGNUP_UNAVAILABLE_PATTERNS:
-        if pat in low:
-            return pat
-    return ""
-
-
 def detect_email_domain_rejection(email=""):
     """检测 xAI 是否拒绝当前邮箱域名。
 
@@ -921,10 +879,10 @@ const patterns = [
     /use another email address/i,
     /请使用其他邮箱/,
     /support@x\.ai/,
-    // 注意：`Email sign-up isn't available right now. Sign up another way.`
-    // 不是域名被拒，而是出口 IP 的注册配额耗尽（服务端 code:
-    // account:email-signup-unavailable）。真正的域名拒绝文案是
-    // `Sign-ups from this email domain aren't allowed.`，见 detect_signup_unavailable。
+    // xAI 对当前出口 IP 关闭邮箱注册时的通用文案（含弯引号变体）
+    /email sign-?up (?:is|isn['\u2019]?t|is not) available/i,
+    /sign up another way/i,
+    /电子邮件注册.{0,20}(不可用|暂不可用)/,
 ];
 for (const text of texts) {
     for (const re of patterns) {
@@ -942,25 +900,6 @@ return '';
     except Exception:
         pass
     return ""
-
-
-class SignupUnavailable(Exception):
-    """出口 IP 的邮箱注册配额已耗尽（不是域名问题）。
-
-    与 EmailDomainRejected 区分开：域名可用，换出口 IP 即可。
-    """
-
-    def __init__(self, message="", email=""):
-        super().__init__(message)
-        self.email = email
-        self.message = message
-
-
-def raise_if_signup_unavailable(email=""):
-    """先判出口配额，再判域名。顺序很重要：配额耗尽时不要拉黑域名。"""
-    hit = detect_signup_unavailable()
-    if hit:
-        raise SignupUnavailable(message=hit, email=email)
 
 
 def raise_if_email_domain_rejected(email=""):
@@ -1003,7 +942,6 @@ def _email_page_advanced_once(email):
       - False：仍停留在邮箱输入页
     """
     # 域名被拒时仍停在邮箱页，优先抛出明确错误
-    raise_if_signup_unavailable(email)
     raise_if_email_domain_rejected(email)
     try:
         return bool(
@@ -1079,7 +1017,6 @@ def _wait_email_page_advanced(email, wait=25.0, cancel_callback=None):
     poll_count = 0
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
-        raise_if_signup_unavailable(email)
         raise_if_email_domain_rejected(email)
         if _email_page_advanced_once(email):
             return True
@@ -1087,7 +1024,6 @@ def _wait_email_page_advanced(email, wait=25.0, cancel_callback=None):
         if poll_count % 3 == 0:
             _human_mouse_drift(1)
         sleep_with_cancel(0.5, cancel_callback)
-    raise_if_signup_unavailable(email)
     raise_if_email_domain_rejected(email)
     return False
 
@@ -1111,86 +1047,6 @@ def fill_email_and_submit(timeout=60, log_callback=None, cancel_callback=None):
             except Exception:
                 pass
         raise
-
-
-CASTLE_READY_JS = r"""
-() => {
-  // xAI 用 Castle 反滥用：缺 castleRequestToken 时服务端返回 200 {"ok":true}
-  // 但不入队发信。必须等 Castle SDK 完成初始化（拿到 request token）。
-  //
-  // Castle 的实例名不固定（_castle / Castle / window.__castle），而且
-  // getToken 不一定挂出来。这里做多路探测：脚本存在、全局对象存在、
-  // 或任一 getToken/getRequestToken 能返回非空串，都算就绪。
-  const out = { castle: false, tokenLen: 0, scripts: 0, srcs: [] };
-  try {
-    const nodes = Array.from(document.querySelectorAll('script[src]'));
-    const hit = nodes.filter((s) => /castle|cna/i.test(s.src || ''));
-    out.scripts = hit.length;
-    out.srcs = hit.map((s) => String(s.src).slice(0, 90)).slice(0, 2);
-  } catch (e) {}
-  try {
-    const w = window;
-    const cands = ['_castle', 'Castle', '__castle', 'castle'];
-    for (const name of cands) {
-      const obj = w[name];
-      if (typeof obj === 'undefined' || obj === null) continue;
-      out.castle = true;
-      for (const fn of ['getToken', 'getRequestToken', 'token']) {
-        try {
-          const v = typeof obj[fn] === 'function' ? obj[fn]() : obj[fn];
-          const len = String(v || '').length;
-          if (len > out.tokenLen) out.tokenLen = len;
-        } catch (e) {}
-      }
-    }
-    // 有些版本把 token 放在隐藏 input 里
-    const hidden = document.querySelector('input[name="castleRequestToken"], input[name*="castle" i]');
-    if (hidden && String(hidden.value || '').length > out.tokenLen) {
-      out.tokenLen = String(hidden.value).length;
-      out.castle = true;
-    }
-  } catch (e) {}
-  return out;
-}
-"""
-
-
-def _wait_castle_ready(timeout=15.0, log_callback=None, cancel_callback=None):
-    """等待 Castle 反滥用 SDK 就绪。
-
-    xAI 的 send-verification-code 需要 castleRequestToken。缺 token 时
-    服务端仍返回 200 {"ok":true}，但不会真正发信——表现为「页面跳到
-    Verify your email 但邮箱永远收不到码」。
-
-    这里在点提交前轮询，尽量确保 token 已生成。拿不到也继续（真浏览器
-    点击时 SDK 通常会自行注入），只是多等几秒提高成功率。
-    """
-    if page is None:
-        return False
-    deadline = time.time() + max(1.0, float(timeout or 15))
-    last = {}
-    while time.time() < deadline:
-        raise_if_cancelled(cancel_callback)
-        try:
-            info = page.run_js(CASTLE_READY_JS)
-        except Exception:
-            info = {}
-        if isinstance(info, dict):
-            last = info
-            if info.get("tokenLen") or info.get("castle"):
-                if log_callback:
-                    log_callback(
-                        f"[*] Castle 反滥用就绪: scripts={info.get('scripts')} "
-                        f"token_len={info.get('tokenLen')}"
-                    )
-                return True
-        sleep_with_cancel(0.6, cancel_callback)
-    if log_callback:
-        log_callback(
-            f"[!] Castle 未在 {timeout:.0f}s 内就绪"
-            f"（scripts={last.get('scripts')} token_len={last.get('tokenLen')}），继续提交"
-        )
-    return False
 
 
 def _fill_email_body(email, dev_token, timeout, log_callback, cancel_callback):
@@ -1427,13 +1283,6 @@ return candidates[0].text || true;
         if log_callback:
             log_callback(f"[*] 邮箱已输入，拟人化核对停留 {email_pause:.1f}s 后提交...")
         sleep_with_cancel(email_pause, cancel_callback)
-        # 提交前确认 Castle 反滥用 token 已生成：缺 token 时 xAI 返回
-        # {"ok":true} 却不发信（静默丢弃），这是「收不到码」的主因。
-        _wait_castle_ready(
-            timeout=CASTLE_WAIT_SECONDS,
-            log_callback=log_callback,
-            cancel_callback=cancel_callback,
-        )
         clicked = _native_click_action(
             (
                 "注册", "继续", "下一步", "确认", "sign up", "signup", "continue", "next", "create account",
@@ -1539,10 +1388,8 @@ return 'enter';
             if log_callback and time.time() - last_diag_time >= 5:
                 last_diag_time = time.time()
                 log_callback(f"[Debug] 已点击注册但页面未前进，重试提交: {email}")
-            raise_if_signup_unavailable(email)
             raise_if_email_domain_rejected(email)
         sleep_with_cancel(0.5, cancel_callback)
-    raise_if_signup_unavailable(email)
     raise_if_email_domain_rejected(email)
     # 超时前最后一次硬恢复
     if log_callback:

@@ -593,99 +593,6 @@ def refresh_access_token(
         raise RuntimeError(f"Outlook RT refresh 失败: {_safe_error(last_err)}")
 
 
-def take_sink_mailbox(
-    sink_email: str,
-    *,
-    domain: str,
-    prefix: str = "",
-    http_post: Optional[HttpPost] = None,
-    default_client_id: str = "",
-    log_callback: LogFn = None,
-) -> Tuple[str, str]:
-    """catch-all sink 模式：注册地址用 <随机>@domain，收信走固定的 sink 邮箱。
-
-    适用场景：Cloudflare Email Routing 把 *@jung.edu.pl 全部转发到一个
-    Outlook 邮箱（sink）。此时注册地址可以是任意本地部分，不必预先建箱；
-    取码时按 To 头匹配即可，不会串号。
-
-    返回 (注册地址, token_key)。token_key 供 wait_for_code 使用；
-    wait_for_code 会从 token_key 解析出 sink 邮箱，并用传入的 email
-    作为 recipient 做 To 头匹配。
-    """
-    sink = str(sink_email or "").strip()
-    if not sink or "@" not in sink:
-        raise Exception("sink 模式需要配置 sink_email（收信邮箱地址）")
-    dom = str(domain or "").strip().lstrip("@")
-    if not dom:
-        raise Exception("sink 模式需要配置注册域名")
-
-    account = _find_account_by_email(sink)
-    if not account:
-        raise Exception(f"sink 邮箱 {sink} 不在库存中")
-
-    token_key = "outlook_rt:" + secrets.token_urlsafe(12)
-    _token_map[token_key] = {
-        "email": sink,
-        "account": account,
-        "inventory_path": "",
-        "used_path": "",
-        "default_client_id": default_client_id or DEFAULT_CLIENT_ID,
-        "refresh_failures": 0,
-        "sink_mode": True,
-    }
-
-    # sink 预检：能刷出 token 才算可用
-    if http_post is not None:
-        try:
-            refresh_access_token(
-                http_post,
-                account,
-                inventory_path="",
-                default_client_id=default_client_id or DEFAULT_CLIENT_ID,
-            )
-        except Exception as exc:
-            _token_map.pop(token_key, None)
-            raise Exception(f"sink 邮箱 {sink} 不可用: {_safe_error(exc)}") from exc
-        if log_callback:
-            log_callback(f"[*] sink 邮箱 {sink} 预检通过")
-
-    local = (prefix or "").strip() or ("u" + secrets.token_hex(5))
-    address = f"{local}@{dom}"
-    return address, token_key
-
-
-def _find_account_by_email(email: str) -> Optional[Dict[str, str]]:
-    """在已加载的库存里按地址找账号（大小写不敏感）。"""
-    want = str(email or "").strip().lower()
-    if not want:
-        return None
-    for acc in _creds_cache():
-        if str(acc.get("email") or "").strip().lower() == want:
-            return acc
-    return None
-
-
-def _creds_cache() -> List[Dict[str, str]]:
-    cached = _token_map.get("__creds_cache__")
-    if cached and isinstance(cached.get("accounts"), list):
-        return cached["accounts"]
-    return []
-
-
-def load_sink_account(inventory_path: str, sink_email: str) -> Dict[str, str]:
-    """从库存文件里读取指定 sink 账号并缓存，供 take_sink_mailbox 使用。"""
-    path = normalize_inventory_path(inventory_path)
-    if not path:
-        raise Exception("请配置 outlook_rt_inventory")
-    accounts = load_inventory(path)
-    want = str(sink_email or "").strip().lower()
-    for acc in accounts:
-        if str(acc.get("email") or "").strip().lower() == want:
-            _token_map["__creds_cache__"] = {"accounts": accounts}
-            return acc
-    raise Exception(f"库存 {path} 里找不到 sink 邮箱 {sink_email}")
-
-
 def take_mailbox(
     inventory_path: str,
     *,
@@ -897,10 +804,7 @@ def _list_messages_url(
     params = {
         "$top": str(max(5, min(50, int(top or 25)))),
         "$orderby": "receivedDateTime desc",
-        "$select": (
-            "id,subject,receivedDateTime,from,toRecipients,ccRecipients,"
-            "bodyPreview,body,internetMessageHeaders"
-        ),
+        "$select": "id,subject,receivedDateTime,from,bodyPreview,body",
     }
     resp = http_get(
         url,
@@ -955,55 +859,6 @@ def list_messages(
     return merged
 
 
-def _recipients_of(item: dict) -> str:
-    """拼出这封邮件的所有收件人地址（小写，逗号分隔）。
-
-    临时邮箱常用「catch-all 转发到一个 sink」的架构：注册地址是
-    xxx@jung.edu.pl，但邮件实际落在 sink 邮箱里。此时只有比对 To 头
-    才能确定这封信属于哪个注册地址，光看 subject/body 会串号。
-    """
-    parts: List[str] = []
-    for key in ("toRecipients", "ToRecipients", "ccRecipients", "CcRecipients"):
-        arr = item.get(key) or []
-        if not isinstance(arr, list):
-            continue
-        for ent in arr:
-            if not isinstance(ent, dict):
-                continue
-            addr = str(((ent.get("emailAddress") or {}).get("address")) or "")
-            if addr:
-                parts.append(addr.strip().lower())
-    # 转发场景下 To 头可能是原始的 xxx@jung.edu.pl
-    headers = item.get("internetMessageHeaders") or item.get("InternetMessageHeaders") or []
-    if isinstance(headers, list):
-        for h in headers:
-            if not isinstance(h, dict):
-                continue
-            name = str(h.get("name") or "").lower()
-            if name in ("to", "x-original-to", "delivered-to", "x-forwarded-to"):
-                val = str(h.get("value") or "")
-                for piece in val.split(","):
-                    piece = piece.strip()
-                    if "@" in piece:
-                        # 去掉 "Name <addr>" 外壳
-                        if "<" in piece and ">" in piece:
-                            piece = piece[piece.rfind("<") + 1:piece.rfind(">")]
-                        parts.append(piece.strip().strip('"').lower())
-    return ",".join(dict.fromkeys(parts))
-
-
-def _recipient_matches(item: dict, recipient: str) -> bool:
-    """该邮件是否发给了 recipient（精确地址或同域 catch-all）。"""
-    want = str(recipient or "").strip().lower()
-    if not want:
-        return True
-    got = _recipients_of(item)
-    if not got:
-        # 拿不到收件人信息时不做否定判断，避免把正常信过滤掉
-        return True
-    return want in got.split(",")
-
-
 def _message_blob(item: dict) -> Tuple[str, str, str]:
     subject = str(item.get("subject") or item.get("Subject") or "")
     preview = str(item.get("bodyPreview") or item.get("BodyPreview") or "")
@@ -1020,13 +875,9 @@ def find_code_in_messages(
     *,
     seen: Optional[set] = None,
     after_ts: float = 0.0,
-    recipient: str = "",
 ) -> Optional[str]:
     seen = seen if seen is not None else set()
     for item in messages:
-        # catch-all sink 场景：只接受发给本注册地址的邮件
-        if recipient and not _recipient_matches(item, recipient):
-            continue
         mid = str(item.get("id") or item.get("Id") or "")
         subject, preview, body = _message_blob(item)
         fingerprint = mid or f"{subject}|{preview[:80]}"
@@ -1196,14 +1047,7 @@ def _wait_for_code_unlocked(
                     raise Exception("Outlook RT Graph 鉴权失败，已弃用当前库存项") from exc
             sleep_with_cancel(poll_interval, cancel_callback)
             continue
-        # email 是本次注册使用的地址；mailbox 是实际收信的 sink。
-        # 二者不同时（catch-all 转发），必须按 To 头匹配，否则会串号。
-        code = find_code_in_messages(
-            messages,
-            seen=seen,
-            after_ts=after_ts,
-            recipient=email if email and email != mailbox else "",
-        )
+        code = find_code_in_messages(messages, seen=seen, after_ts=after_ts)
         if code:
             if mark_on_success and inventory_path:
                 try:
