@@ -323,3 +323,58 @@ python3 /tmp/verify_delivery.py jung.edu.pl
 # 建箱 -> Outlook Graph 真发信 -> 12 轮 x 6s 轮询
 # 输出 *** DELIVERY WORKS *** 或 *** STILL BROKEN ***
 ```
+
+---
+
+# 2026-10-25 决定性结论：xAI 已全局关闭邮箱验证码投递
+
+## 症状
+页面显示 `Email sign-up isn't available right now. Sign up another way.`
+
+## 排查链路（全部实测）
+1. **不是代理问题**：21037/21045/21047/21052 等多节点行为一致。
+2. **不是域名问题**：`jung.edu.pl`、`gmail.com`、`outlook.com`、
+   真实 `SwarmKohlhepp432@outlook.com` 全部返回 `200 {"ok":true}`，零投递。
+3. **不是 Castle token 问题**：无 token / 空 token / 假 token（`"A"*100`）
+   三种 body 服务端响应完全一样，全是 `200 {"ok":true}`。
+4. **前端根本没发请求**：注入 `window.fetch` 钩子后捕获到 **0 个 fetch**。
+   `accounts.x.ai/api` 只有一条 `POST /api/observability/client-metrics`。
+
+## 根因（从前端 bundle 反推，证据确凿）
+服务端 SSR 内嵌的常量里：
+```
+enableCastle: true
+castleSdk: "next"
+castlePk: "pk_p8GGWvD3TmFJZRsX3BQcqAv9aFVispNz"
+account_castle_steps: {}          ← 空对象
+```
+
+`161sx-3v0jqlm.js` 的逻辑：
+```js
+let c = n ?? (undefined === r ? "closed" : r);   // n = castle_steps["signUp.sendCode"]
+return u(o, i, "on" !== c || s ? c : "closed");
+```
+`161sx-3v0jqlm.js` 里 `"signUp.sendCode":"on"` 只是**前端默认值表**，
+服务端 `account_castle_steps` 为空时被覆盖成 `"closed"`。
+
+`mintPosture(e)`：`"shadow"→"open"`，其余 → `"closed"`。
+posture 为 `closed` 时不 mint token → `if (s.error) return l(s.error)` 直接短路
+→ **fetch 根本不会执行** → 页面渲染 `ACCOUNT_EMAIL_SIGNUP_UNAVAILABLE`
+→ 文案 `Email sign-up isn't available right now. Sign up another way.`
+
+## 时间线
+- 最后一批成功投递：`2026-10-25T00:37:28Z`（北京时间 08:37）
+- 此后所有尝试（含 gmail / 真实 outlook）：零投递
+- 社区同期有相同反馈：
+  [r/grok: is sign up with email option disabled?](https://www.reddit.com/r/grok/comments/1qzp5us/is_sign_up_with_email_option_disabled_i_cant_make/)
+
+## 代码侧已做的修复（flag 恢复后立即生效）
+`register_flow.py`：
+- `CASTLE_READY_JS` 多路探测（`_castle` / `Castle` / `__castle` + 隐藏 input）
+- `_wait_castle_ready()`：提交前轮询，最长 `CASTLE_WAIT_SECONDS`（默认 20s）
+- 拿不到 token 也继续提交，只记日志，不阻断
+
+## 结论
+**10 个号的目标在当前服务端状态下不可达**，不是代码或代理问题。
+恢复条件：`account_castle_steps` 里重新出现 `{"signUp.sendCode": "on"|"shadow"}`。
+监控方式：抓 sign-up 页 SSR HTML，grep `account_castle_steps`。
