@@ -179,12 +179,48 @@ def _human_mouse_drift(count: int = 2) -> None:
         pass
 
 
+def _human_type_element(element, text: str) -> bool:
+    """逐字符键入，产生真实 keydown/keyup 节奏（Castle 依据输入节奏判定真人）。"""
+    loc = getattr(element, "_locator", None)
+    if loc is None:
+        return False
+    try:
+        loc.click(timeout=3)
+    except Exception:
+        try:
+            element.click(timeout=3)
+        except Exception:
+            return False
+    time.sleep(random.uniform(0.22, 0.48))
+    typed = 0
+    for ch in text:
+        try:
+            loc.type(ch, delay=0)
+            typed += 1
+        except Exception:
+            return False
+        # 人类击键间隔：字母间 80-220ms，偶尔更长停顿
+        gap = random.uniform(0.08, 0.22)
+        if random.random() < 0.07:
+            gap += random.uniform(0.15, 0.45)
+        time.sleep(gap)
+    return typed == len(text)
+
+
 def _native_type_element(element, value: str, per_char: bool = True) -> bool:
     """使用 Playwright 真实键盘事件输入，避免 JS setter 产生 isTrusted=false 事件。"""
     if not element or not _native_is_usable(element):
         return False
     text = str(value or "")
     try:
+        if per_char and text:
+            if _human_type_element(element, text):
+                time.sleep(random.uniform(0.30, 0.65))
+                try:
+                    current = str(element.property("value") or "")
+                except Exception:
+                    current = ""
+                return not current or current.strip() == text.strip()
         element.click(timeout=3)
         time.sleep(random.uniform(0.25, 0.55))
         element.input(text, clear=True, by_js=False)
@@ -379,9 +415,12 @@ const given = pick('input[data-testid="givenName"], [data-testid="givenName"] in
 const family = pick('input[data-testid="familyName"], [data-testid="familyName"] input, input[name="familyName"], input[autocomplete="family-name"], input[name="lastName"], input[autocomplete="familyname"]');
 const password = pick('input[data-testid="password"], [data-testid="password"] input, input[name="password"], input[type="password"], input[autocomplete="new-password"]');
 const otp = pick('input[data-input-otp], input[data-input-otp="true"], input[autocomplete="one-time-code"], input[name="code"]');
-const cfInput = document.querySelector('input[name="cf-turnstile-response"]');
-const cf = !!cfInput
-  || !!document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
+// 判定 CF 必须看真实 widget：xAI 会在无 widget 的页面也注入一个空的
+// input[name="cf-turnstile-response"]，只看它会让 cf 恒为 true。
+const cfWidgetReal = !!document.querySelector(
+  'iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey]'
+);
+const cf = cfWidgetReal;
 const body = String(document.body && document.body.innerText || '').replace(/\s+/g, ' ');
 const low = body.toLowerCase();
 const title = String(document.title || '');
@@ -625,6 +664,41 @@ def _reload_signup_and_open_email(log_callback=None, cancel_callback=None):
         return False
 
 
+def _native_locator_click_email_entry(log_callback=None) -> bool:
+    """用 Playwright 原生 locator 点击「Sign up with email」。
+
+    只在 Drission 风格点击失效时作为兜底；走真实鼠标事件（isTrusted=true），
+    不会触发 reload，因此不破坏 Castle 会话。
+    """
+    try:
+        raw = getattr(page, "raw_page", None)
+    except Exception:
+        raw = None
+    if raw is None:
+        return False
+    selectors = (
+        'button:has-text("Sign up with email")',
+        'button:has-text("Continue with email")',
+        '[role="button"]:has-text("Sign up with email")',
+        'button:has-text("Sign up with Email")',
+    )
+    for sel in selectors:
+        try:
+            loc = raw.locator(sel).first
+            if loc.count() == 0:
+                continue
+            loc.scroll_into_view_if_needed(timeout=3000)
+            time.sleep(random.uniform(0.12, 0.30))
+            loc.click(timeout=6000)
+            if log_callback:
+                log_callback(f"[*] 已用原生 locator 点击邮箱注册入口: {sel}")
+            time.sleep(random.uniform(1.0, 1.8))
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def click_email_signup_button(timeout=25, log_callback=None, cancel_callback=None):
     deadline = time.time() + timeout
     first_attempt = True
@@ -809,6 +883,12 @@ def open_signup_page(log_callback=None, cancel_callback=None):
         log_callback=log_callback, cancel_callback=cancel_callback
     )
     if not _wait_email_form(timeout=20, log_callback=log_callback, cancel_callback=cancel_callback):
+        # 兜底：Drission 风格的 ele.states 判定在 Chromium 下可能命中隐藏副本，
+        # 用 Playwright 原生 locator 直接点可见的「Sign up with email」，
+        # 避免无谓 reload（reload 会重置 Castle 会话，导致提交被拒）。
+        if _native_locator_click_email_entry(log_callback=log_callback):
+            if _wait_email_form(timeout=15, log_callback=log_callback, cancel_callback=cancel_callback):
+                return
         if log_callback:
             log_callback("[!] 点击邮箱注册后仍无输入框，reload 重试")
         if not _reload_signup_and_open_email(log_callback=log_callback, cancel_callback=cancel_callback):
@@ -2030,8 +2110,12 @@ const passwordInput = pickField([
     'input[autocomplete="new-password"]',
 ]);
 
-const cfEarly = document.querySelector('input[name="cf-turnstile-response"]')
-  || document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
+// 只有真正的 widget 容器 / 隐藏 input 才算需要过 CF。
+// script[src*=turnstile] 在所有页面都会加载，拿它判 wait-cf 会让表单
+// 永远等不到（字段渲染后仍被判 wait-cloudflare:0 直到超时）。
+const cfEarly = !!document.querySelector(
+  'iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey]'
+);
 if ((!givenInput || !familyInput || !passwordInput) && cfEarly) {
     const token = String((document.querySelector('input[name="cf-turnstile-response"]') || {}).value || '').trim();
     return 'wait-cloudflare:' + token.length;
@@ -2062,7 +2146,12 @@ let token = String((cfInput && cfInput.value) || '').trim();
 if (!token && window.turnstile && typeof window.turnstile.getResponse === 'function') {
     try { token = String(window.turnstile.getResponse() || '').trim(); } catch(e) {}
 }
-if (token.length < 80) {
+// 仅当页面真的渲染了 Turnstile widget 且尚未拿到 token 时才阻塞等待。
+// 无 widget 的页面（本站常态）直接提交，避免死等 40s 后报 wait-cf 超时。
+const cfWidget = !!document.querySelector(
+  'iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey]'
+);
+if (cfWidget && token.length < 80) {
     return 'wait-cloudflare:' + token.length;
 }
 
@@ -2183,8 +2272,12 @@ let token = String((cfInput && cfInput.value) || '').trim();
 if (!token && window.turnstile && typeof window.turnstile.getResponse === 'function') {
     try { token = String(window.turnstile.getResponse() || '').trim(); } catch(e) {}
 }
-// 资料页 Turnstile 严格门禁：未获得有效 token (>=80) 严禁进入就绪状态
-if (token.length < 80) {
+// 只有页面真的挂了 Turnstile widget 才用 token 做门禁；
+// 本站资料页通常不渲染 widget，无条件要求 token>=80 会死等到超时。
+const cfWidget2 = !!document.querySelector(
+  'iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey]'
+);
+if (cfWidget2 && token.length < 80) {
     return 'wait-cloudflare:' + token.length;
 }
 
@@ -2248,8 +2341,18 @@ return 'ready-to-submit';
             continue
 
         if submit_state == "ready-to-submit":
-            # 严格双重保险：Python 层二次验证 Turnstile token
-            token_val = page.run_js(r"""
+            # 严格双重保险：仅当页面真的渲染了 Turnstile widget 才校验 token。
+            # xAI 会在无 widget 的资料页也注入空 input[name=cf-turnstile-response]，
+            # 无条件要求 token>=80 会在此处死循环到超时。
+            cf_real = page.run_js(
+                r"""
+return !!document.querySelector(
+  'iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey]'
+);
+            """
+            )
+            if cf_real:
+                token_val = page.run_js(r"""
 try {
   const el = document.querySelector('input[name="cf-turnstile-response"]');
   if (el && el.value) return el.value.trim();
@@ -2258,11 +2361,11 @@ try {
   }
 } catch(e) {}
 return '';
-            """)
-            token_val = str(token_val or "").strip()
-            if len(token_val) < 80:
-                submit_state = f"wait-cloudflare:{len(token_val)}"
-                continue
+                """)
+                token_val = str(token_val or "").strip()
+                if len(token_val) < 80:
+                    submit_state = f"wait-cloudflare:{len(token_val)}"
+                    continue
 
             last_state = "ready-to-submit"
             # 拟人化随机停留：模拟人类填写完姓名密码后核对表单
@@ -2272,7 +2375,8 @@ return '';
             sleep_with_cancel(profile_pause, cancel_callback)
             clicked_native = _native_click_action(
                 (
-                    "完成注册", "创建账户", "signup", "create account", "continue", "next",
+                    "complete sign up", "complete your sign up", "完成注册", "创建账户",
+                    "signup", "create account", "continue", "next",
                     "registr", "finalizar", "inscrire", "registrieren",
                     "inscrever", "registrati", "登録",
                 )
@@ -3014,8 +3118,10 @@ const titleHit = !!Array.from(document.querySelectorAll('h1,h2,div,span')).find(
 if (!titleHit) return 'not-final-page';
 
 const cfInput = document.querySelector('input[name="cf-turnstile-response"]');
-const cfPresent = !!cfInput
-  || !!document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
+// 同前：只有真实 widget 才算需要过 CF。
+const cfPresent = !!document.querySelector(
+  'iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey]'
+);
 if (cfPresent) {
     const token = String((cfInput && cfInput.value) || '').trim();
     const solved = token.length >= 80;

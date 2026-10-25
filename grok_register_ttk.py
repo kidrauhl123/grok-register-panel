@@ -254,6 +254,10 @@ DEFAULT_CONFIG = {
     "outlook_rt_inventory": "",
     "outlook_rt_used_path": "",
     "outlook_rt_client_id": outlook_rt_provider.DEFAULT_CLIENT_ID,
+    # catch-all sink 模式：注册地址用 <随机>@outlook_rt_sink_domain，
+    # 验证码统一转发到 outlook_rt_sink_email（如 Cloudflare Email Routing）。
+    "outlook_rt_sink_email": "",
+    "outlook_rt_sink_domain": "",
     "outlook_accounts_file": "keys/outlook_pending.txt",
     "outlook_used_file": "keys/outlook_used.txt",
     "outlook_proxy": "",
@@ -2001,6 +2005,8 @@ def get_email_and_token(api_key=None):
             proxy=config.get("outlook_proxy") or None,
         )
     if provider == "outlook_rt":
+        if get_outlook_rt_sink_email():
+            return outlook_rt_take_sink_mailbox()
         return outlook_rt_take_mailbox()
     return duckmail_provider.create_mailbox(
         http_get,
@@ -2023,6 +2029,42 @@ def get_outlook_rt_client_id():
     return (
         str(config.get("outlook_rt_client_id", "") or "").strip()
         or outlook_rt_provider.DEFAULT_CLIENT_ID
+    )
+
+
+def get_outlook_rt_sink_email():
+    return str(config.get("outlook_rt_sink_email", "") or "").strip()
+
+
+def get_outlook_rt_sink_domain():
+    return str(config.get("outlook_rt_sink_domain", "") or "").strip()
+
+
+def outlook_rt_take_sink_mailbox():
+    """catch-all sink 模式：任意本地部分 @ 指定域名，收信走固定 sink 邮箱。"""
+    inv = get_outlook_rt_inventory()
+    sink = get_outlook_rt_sink_email()
+    domain = get_outlook_rt_sink_domain()
+    if not inv:
+        raise Exception("sink 模式请在配置中填写 outlook_rt_inventory")
+    if not sink:
+        raise Exception("sink 模式请在配置中填写 outlook_rt_sink_email")
+    if not domain:
+        raise Exception("sink 模式请在配置中填写 outlook_rt_sink_domain")
+
+    def _log(msg: str) -> None:
+        try:
+            cli_log(msg)
+        except Exception:
+            print(msg, flush=True)
+
+    outlook_rt_provider.load_sink_account(inv, sink)
+    return outlook_rt_provider.take_sink_mailbox(
+        sink,
+        domain=domain,
+        http_post=http_post,
+        default_client_id=get_outlook_rt_client_id(),
+        log_callback=_log,
     )
 
 
@@ -4047,6 +4089,20 @@ class GrokRegisterGUI:
                 except RegistrationCancelled:
                     wlog("[!] 注册被用户停止")
                     break
+                except EmailDomainRejected as exc:
+                    # 出口 IP 的邮箱注册配额耗尽：只换节点，绝不动域名池
+                    try:
+                        ban_proxy_for_signup(get_thread_proxy() or str(config.get('proxy') or ''))
+                    except Exception:
+                        pass
+                    kind = self._record_failure(exc)
+                    retry_count_for_slot = 0
+                    i += 1
+                    wlog(
+                        f"[-] 出口 IP 邮箱注册配额耗尽 [{FAIL_LABELS.get(kind, kind)}]: "
+                        f"{redact_sensitive_log_line(str(exc))}"
+                    )
+                    wlog("[!] 域名可用，仅出口受限；下号自动轮换代理节点")
                 except EmailDomainRejected as exc:
                     # 该出口 IP 已被 xAI 限制邮箱注册：拉黑并让下号换口
                     try:

@@ -206,6 +206,37 @@ class SafeCamoufox(_Camoufox):
 _PROFILE_ROOT_MARKER = "grok-register-camoufox"
 
 _tls = threading.local()
+
+
+def _teardown_pw_connection() -> None:
+    """释放上一轮遗留的 Playwright 连接与事件循环。
+
+    `_launch_chromium_context` / `_launch_roxy_context` 都是自建 asyncio loop
+    来绕开 PlaywrightContextManager 的 get_running_loop() 检查。重试时若不
+    先清掉旧的 loop，新一轮 `run_until_complete` 会报
+    "Cannot run the event loop while another loop is running"。
+    """
+    conn = getattr(_tls, "pw_connection", None)
+    loop = getattr(_tls, "pw_loop", None)
+    _tls.pw_connection = None
+    _tls.pw_loop = None
+    if loop is not None:
+        try:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(loop.stop)
+        except Exception:
+            pass
+        try:
+            if not loop.is_closed() and not loop.is_running():
+                loop.close()
+        except Exception:
+            pass
+    if conn is not None:
+        try:
+            conn.stop_sync()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
 _get_proxy: Optional[Callable[[], dict]] = None
 _is_debug: Optional[Callable[[], bool]] = None
 _extension_path: str = ""
@@ -874,7 +905,204 @@ def create_browser_options(unique_profile=True) -> dict:
         opts["user_data_dir"] = profile_dir
         _tls.profile_dir = profile_dir
 
+    # 引擎选择：chromium（默认，Castle 可通过）/ camoufox
+    engine = os.environ.get("GROK_BROWSER_ENGINE", "").strip().lower()
+    if not engine:
+        try:
+            import json as _json
+
+            _cfg_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "config.json"
+            )
+            with open(_cfg_path, "r", encoding="utf-8") as _fh:
+                engine = str(_json.load(_fh).get("browser_engine") or "").strip().lower()
+        except Exception:
+            engine = ""
+    opts["engine"] = engine or "chromium"
+
     return opts
+
+
+# Chromium 反自动化脚本：Castle 会检查 navigator.webdriver / chrome 对象等痕迹。
+_CHROMIUM_STEALTH_JS = r"""
+// 只抹掉自动化标记，不改写任何指纹字段（改写会造成 UA/platform 矛盾）。
+try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
+try { if (!window.chrome) { window.chrome = { runtime: {} }; } } catch (e) {}
+"""
+
+_CHROMIUM_EXEC_CANDIDATES = (
+    "/root/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+    "/root/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome",
+)
+
+
+def _find_chromium_executable() -> str:
+    """定位可用的 Chromium 可执行文件。"""
+    env_path = os.environ.get("GROK_CHROMIUM_EXECUTABLE", "").strip()
+    if env_path and os.path.exists(env_path):
+        return env_path
+    for cand in _CHROMIUM_EXEC_CANDIDATES:
+        if os.path.exists(cand):
+            return cand
+    import glob as _glob
+
+    for pat in (
+        os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome"),
+        os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux/chrome"),
+    ):
+        hits = sorted(_glob.glob(pat))
+        if hits:
+            return hits[-1]
+    for cand in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
+def _launch_chromium_context(opts: dict, profile_dir=None, log_callback=None):
+    """用 Playwright Chromium 启动带反检测的持久化上下文。
+
+    Castle 风控对 Gecko 指纹（Camoufox Firefox 156）判定为高风险，
+    返回 account:email-signup-unavailable；Chromium 内核可通过。
+    """
+    executable = _find_chromium_executable()
+    if not executable:
+        raise RuntimeError("未找到 Chromium 可执行文件，可用 GROK_CHROMIUM_EXECUTABLE 指定")
+
+    proxy = opts.get("proxy") or {}
+    server = str(proxy.get("server") or "").strip()
+    if server.startswith("socks5h://"):
+        server = "socks5://" + server[len("socks5h://"):]
+    proxy_arg = None
+    if server:
+        proxy_arg = {"server": server}
+        for key in ("username", "password"):
+            if proxy.get(key):
+                proxy_arg[key] = proxy[key]
+
+    # 只保留最小必要参数：多余的 --disable-features 会拖慢 Next.js 水合，
+    # 导致注册页输入框迟迟不出现（面板因此误判空页并 reload）。
+    args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+    ]
+    # 关键：不要覆盖 UA。Castle 会交叉校验 UA 与 navigator.platform，
+    # Windows UA + Linux platform 会被直接判定为伪造指纹并返回
+    # account:email-signup-unavailable。这里保留 Chromium 原生自洽指纹。
+    locale = str(opts.get("locale") or "en-US")
+    ctx_kwargs = {
+        "locale": locale,
+        "viewport": {"width": 1920, "height": 1080},
+        "timezone_id": str(opts.get("timezone") or "") or None,
+    }
+    ctx_kwargs = {k: v for k, v in ctx_kwargs.items() if v is not None}
+
+    if log_callback:
+        log_callback(f"[*] 浏览器引擎: chromium ({os.path.basename(executable)})")
+
+    # 与 SafeCamoufox 同理：当前线程可能已有运行中的 asyncio loop，
+    # PlaywrightContextManager.__enter__() 会直接报错；这里自建事件循环。
+    loop = asyncio.new_event_loop()
+    pw = _SyncPlaywright.__new__(_SyncPlaywright)
+
+    def _greenlet_main():
+        loop.run_until_complete(connection.run_as_sync())
+
+    connection = _PwConnection(
+        _PwMainGreenlet(_greenlet_main),
+        _pw_create_remote,
+        _PwPipeTransport(loop),
+        loop,
+    )
+    g_self = greenlet.getcurrent()
+
+    def _callback_wrapper(channel_owner):
+        impl = _tcast(_PwImpl, channel_owner)
+        pw.__init__(impl)
+        g_self.switch()
+
+    connection.call_on_object_with_known_name("Playwright", _callback_wrapper)
+    connection._dispatcher_fiber.switch()
+
+    launch_kwargs = {"headless": False, "executable_path": executable, "args": args}
+    if proxy_arg:
+        launch_kwargs["proxy"] = proxy_arg
+    if profile_dir:
+        context = pw.chromium.launch_persistent_context(
+            str(profile_dir), **ctx_kwargs, **launch_kwargs
+        )
+    else:
+        browser = pw.chromium.launch(**launch_kwargs)
+        context = browser.new_context(**ctx_kwargs)
+    try:
+        context.add_init_script(_CHROMIUM_STEALTH_JS)
+    except Exception:
+        pass
+    _tls.pw_connection = connection
+    _tls.pw_loop = loop
+    return context
+
+
+def _launch_roxy_context(opts: dict, profile_dir=None, log_callback=None):
+    """启动 RoxyChrome（本地指纹注入内核）并用 Playwright CDP 接管。
+
+    Turnstile 在普通 Chromium + Xvfb 下必然返回 error code 600010
+    （bot behavior detected），资料页提交因此被 `if(!B) return` 直接拦掉。
+    RoxyChrome 在编译期挂载 fingerprint_inject_service，读 lumi.conf 注入
+    真实 GPU / Canvas / AudioContext 指纹后 Cloudflare 立即放行。
+    """
+    import roxy_browser
+
+    # 重试时上一轮的 Playwright 连接 / 事件循环可能还活着，
+    # 直接新建会撞 "Cannot run the event loop while another loop is running"。
+    _teardown_pw_connection()
+
+    proxy = opts.get("proxy") or {}
+    server = str(proxy.get("server") or "").strip()
+    if proxy.get("username"):
+        # 带认证的代理转成 URL 形式交给 roxy_browser.parse_proxy
+        auth = f"{proxy['username']}:{proxy.get('password', '')}@"
+        server = server.replace("://", f"://{auth}", 1)
+
+    roxy = roxy_browser.RoxyChromeProcess(
+        profile_dir=profile_dir,
+        proxy_str=server,
+        headless=False,
+        log_callback=log_callback,
+        locale=str(opts.get("locale") or "en-US"),
+        timezone=str(opts.get("timezone") or "America/New_York"),
+    )
+    roxy.start()
+
+    loop = asyncio.new_event_loop()
+    pw = _SyncPlaywright.__new__(_SyncPlaywright)
+
+    def _greenlet_main():
+        loop.run_until_complete(connection.run_as_sync())
+
+    connection = _PwConnection(
+        _PwMainGreenlet(_greenlet_main),
+        _pw_create_remote,
+        _PwPipeTransport(loop),
+        loop,
+    )
+    g_self = greenlet.getcurrent()
+
+    def _callback_wrapper(channel_owner):
+        impl = _tcast(_PwImpl, channel_owner)
+        pw.__init__(impl)
+        g_self.switch()
+
+    connection.call_on_object_with_known_name("Playwright", _callback_wrapper)
+    connection._dispatcher_fiber.switch()
+
+    browser, context = roxy_browser.connect_playwright(roxy.port, pw)
+
+    _tls.pw_connection = connection
+    _tls.pw_loop = loop
+    _tls.roxy_process = roxy
+    return context
 
 
 def start_browser(log_callback=None) -> Tuple[object, object]:
@@ -898,10 +1126,26 @@ def start_browser(log_callback=None) -> Tuple[object, object]:
             if log_callback and isinstance(opts.get("geoip"), str):
                 log_callback(f"[Debug] geoip 使用预解析出口 IP: {opts['geoip']}")
 
-            # SafeCamoufox.__enter__() 直接创建全新事件循环，
-            # 完全绕过 PlaywrightContextManager 的 get_running_loop() 检查
-            camoufox = SafeCamoufox(**opts)
-            browser_context = camoufox.__enter__()
+            engine = str(
+                os.environ.get("GROK_BROWSER_ENGINE")
+                or opts.get("engine")
+                or "chromium"
+            ).strip().lower()
+            if engine == "roxy":
+                browser_context = _launch_roxy_context(
+                    opts, profile_dir=profile_dir, log_callback=log_callback
+                )
+                camoufox = None
+            elif engine == "chromium":
+                browser_context = _launch_chromium_context(
+                    opts, profile_dir=profile_dir, log_callback=log_callback
+                )
+                camoufox = None
+            else:
+                # SafeCamoufox.__enter__() 直接创建全新事件循环，
+                # 完全绕过 PlaywrightContextManager 的 get_running_loop() 检查
+                camoufox = SafeCamoufox(**opts)
+                browser_context = camoufox.__enter__()
 
             # Optional shared cache for immutable browser assets. The helper is
             # a no-op unless GROK_STATIC_ASSET_CACHE is explicitly enabled.
@@ -1023,7 +1267,14 @@ def stop_browser(force=False):
         pass
     current = active_browser()
     profile_dir = getattr(_tls, "profile_dir", None)
+    roxy = getattr(_tls, "roxy_process", None)
+    _tls.roxy_process = None
     set_browser_session(None, None)
+    if roxy is not None:
+        try:
+            roxy.stop()
+        except Exception:
+            pass
     if current is None:
         _cleanup_profile_dir(profile_dir)
         return
