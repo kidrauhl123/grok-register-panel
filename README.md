@@ -283,6 +283,11 @@ Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（�
 | `cpa_auto_add` | 是否 SSO→OAuth 并写入 auth |
 | `cpa_auth_dir` | 本地 CPA 目录（`xai-*.json`） |
 | `grok2api_auth_dir` | Grok2API 风格 auth 目录 |
+| `grok2api_auto_add_remote` | 是否把账号推到远程 grok2api 号池（默认 `false`） |
+| `grok2api_remote_base` | 远端地址，如 `https://xai.premsir.com`（非 loopback 必须 HTTPS） |
+| `grok2api_remote_admin_username` / `_password` | 远端管理员凭据 |
+| `grok2api_remote_only_healthy` | **默认 `true`**：只有 `quality_verdict == healthy` 才推送；降智号只留本地 |
+| `grok2api_remote_target` | `build` / `both` / `all` |
 | `quality_probe_on_register` | 默认 `false`；打开后写入 auth 才短测降智。补录 CLI 用 `--quality-probe` |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 

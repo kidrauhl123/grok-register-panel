@@ -81,3 +81,87 @@ DMARC 对齐可能不通过。
 
 **但这不影响生产**：xAI 用 SendGrid 发信（`wfbtsnfp.outbound-mail.sendgrid.net`），
 SPF/DKIM 全 pass，所以 xAI 的码 100% 能落到 sink。
+
+---
+
+## Grok2API 号池自动推送（2026-10-25 打通）
+
+### 逻辑
+
+注册成功 → 换 auth token → **降智检测** → 按 verdict 决定是否推送：
+
+```python
+# grok_register_ttk.py:1377
+push_only_healthy = config.get("grok2api_remote_only_healthy", True)
+if quality_on and push_only_healthy and verdict != "healthy":
+    _cpa_log(f"⚠️ 账号降智检测结果为 {verdict}（非 healthy），已拦截远程推送到 xai.premsir，仅保留本地")
+else:
+    maybe_import_remote(record=record, sso=sso, email=email, verdict=verdict)
+```
+
+即：**只有 `quality_verdict == "healthy"` 的账号才会进号池**；
+`hard` / `error` / `unknown` 一律拦截，只留本地 `cpa_auth/`。
+
+### 必要配置
+
+```json
+{
+  "cpa_auto_add": true,
+  "quality_probe_on_register": true,
+  "grok2api_auto_add_remote": true,
+  "grok2api_remote_base": "https://xai.premsir.com",
+  "grok2api_remote_admin_username": "jungpusher",
+  "grok2api_remote_admin_password": "<见下方>",
+  "grok2api_remote_only_healthy": true,
+  "grok2api_remote_target": "build"
+}
+```
+
+三个开关缺一不可：
+- `cpa_auto_add=false` → 不换 token，质检无法执行，也不会推送
+- `quality_probe_on_register=false` → 不质检，`verdict` 为空
+- `grok2api_auto_add_remote=false` → `maybe_import_remote()` 第一行直接 return
+
+### 接口
+
+| 项 | 值 |
+|---|---|
+| 公网入口 | `https://xai.premsir.com`（`grok.premsir.com` 308 跳转过来） |
+| 登录 | `POST /api/admin/v1/auth/login` `{username, password}` |
+| 导入 | `POST /api/admin/v1/accounts/import`（multipart，字段 `file`） |
+| 列表 | `GET /api/admin/v1/accounts` |
+| 容器 | `grok2api`，宿主端口 `127.0.0.1:8001` / `0.0.0.0:8000` |
+| 数据库 | SQLite `/var/lib/docker/volumes/grok2api_grok2api-data/_data/backend.db` |
+
+### 专用推送账号
+
+原 `admin` 密码未知（bootstrapAdmin 只在首次启动时生效，之后改过），
+因此新建专用账号 `jungpusher`：
+
+```sql
+INSERT INTO admins (username, password_hash, created_at, updated_at)
+VALUES ('jungpusher', '<bcrypt>', datetime('now'), datetime('now'));
+```
+
+**坑：Go 的 `golang.org/x/crypto/bcrypt` 只接受 `$2a$` 前缀。**
+Python `bcrypt` 默认生成 `$2b$`，直接写入会导致 `invalidCredentials`。
+需要替换：
+
+```python
+h = bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=10)).decode()
+h = "$2a$" + h[4:]      # 关键
+```
+
+写库时注意 shell 转义会破坏 `$`，**用文件传输再读入**，不要内联到 ssh 命令里。
+
+### 验证结果（2026-10-25）
+
+```
+healthy 账号 u39c45489f5@jung.edu.pl
+  → 已导入 chenyme grok2api Grok Build: created=1, updated=0, skipped=0, synced=1
+  → 号池 id=6573 status=active enabled=True
+
+hard 账号 uc52035e7ee@jung.edu.pl
+  → ⚠️ 账号质量裁决为 hard（非 healthy），已拦截远程导入 xai.premsir
+  → 仅保留本地 cpa_auth/
+```
