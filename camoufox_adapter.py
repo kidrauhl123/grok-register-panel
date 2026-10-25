@@ -371,6 +371,9 @@ class CamoufoxPage:
         # load 事件要等全部第三方资源（Turnstile/Castle/字体），住宅出口下常挂
         # 60s goto 超时；后续流程都是轮询元素，domcontentloaded 足够。
         kw.setdefault("wait_until", "domcontentloaded")
+        # 住宅代理首包慢（TCP+TLS 经跳板），60s 默认值实测会超时；
+        # 上层对失败有重试，这里给足 120s 让慢节点也能过。
+        kw.setdefault("timeout", 120_000)
         self._page.goto(url, **kw)
 
     def back(self):

@@ -832,6 +832,12 @@ def create_browser_options(unique_profile=True) -> dict:
             raise
         network_proxy = meter_proxy_url(proxy, original_proxy=upstream_proxy)
         opts["proxy"] = _build_camoufox_proxy(network_proxy)
+        if os.environ.get("JUNG_PROXY_DEBUG"):
+            print(
+                f"[proxy-debug] upstream={upstream_proxy} bound={proxy} "
+                f"metered={network_proxy} opts={opts['proxy']}",
+                flush=True,
+            )
         try:
             exit_ip = _resolve_proxy_exit_ip(network_proxy, timeout=8.0)
             blocked, meta = is_blocked_exit_ip(exit_ip)
