@@ -311,6 +311,35 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                 return "邮箱API", False, "未配置 outlook_rt_inventory"
             used = str(config.get("outlook_rt_used_path") or "").strip()
             client_id = str(config.get("outlook_rt_client_id") or "").strip()
+
+            # catch-all sink 模式：注册地址是 <随机>@sink_domain，收信统一走
+            # 一个固定 sink 邮箱，不消耗库存。此时预检只需验 sink 账号能否
+            # refresh，不必（也不能）按库存取号——库存可能已全部 used。
+            sink_email = str(config.get("outlook_rt_sink_email") or "").strip()
+            sink_domain = str(config.get("outlook_rt_sink_domain") or "").strip()
+            if sink_email and sink_domain:
+                try:
+                    acct = outlook_rt_provider.load_sink_account(inv, sink_email)
+                    access = outlook_rt_provider.refresh_access_token(
+                        http_post,
+                        acct,
+                        inventory_path=inv,
+                        default_client_id=client_id or outlook_rt_provider.DEFAULT_CLIENT_ID,
+                    )
+                    return (
+                        "邮箱API",
+                        True,
+                        f"sink 模式 · 收信 {sink_email} · 注册域 @{sink_domain} "
+                        f"· refresh OK (at_len={len(access)})",
+                    )
+                except Exception as exc:
+                    return (
+                        "邮箱API",
+                        False,
+                        f"sink 模式 · sink {sink_email} refresh 失败: "
+                        f"{outlook_rt_provider._safe_error(exc)}",
+                    )
+
             detail = outlook_rt_provider.probe_inventory(
                 http_post,
                 inv,
