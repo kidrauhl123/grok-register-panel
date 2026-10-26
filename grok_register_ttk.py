@@ -3945,7 +3945,10 @@ class GrokRegisterGUI:
             )
 
     def run_registration(self, count, worker_id=0, workers=1):
-        prefix = f"[W{worker_id + 1}] " if workers > 1 else ""
+        # 始终带 [W<n>] 前缀：面板 KDA 统计（webui/proxy_store._get_proxy_kda_map）
+        # 靠 "[W1] [*] 绑定代理:" 和 "[W1] [CPA] ✅ 降智测试:" 这两个模式把
+        # 代理端口与 kills/deaths 关联起来。单 worker 不带前缀会导致 KDA 恒为 0/0/0。
+        prefix = f"[W{worker_id + 1}] "
 
         def wlog(message):
             text = str(message)
